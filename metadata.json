@@ -1,0 +1,8 @@
+{
+  "name": "MangaLens: AI Comic Translator",
+  "description": "An AI-powered tool that detects manga speech bubbles, extracts original text, and translates it contextually while providing redraw coordinates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

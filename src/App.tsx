@@ -1,0 +1,627 @@
+import React, { useState, useRef, useEffect } from "react";
+import { 
+  Upload, Languages, Scan, ChevronRight, Loader2, 
+  Info, Eye, EyeOff, Menu, X, Key, RotateCcw, Clock, History, Trash2
+} from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
+
+interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface Bubble {
+  bubble_id: number;
+  bounding_box: BoundingBox;
+  original_text: string;
+  translated_text: string;
+  confidence_score: number;
+}
+
+interface MangaResult {
+  total_bubbles: number;
+  scene_context: string;
+  bubbles: Bubble[];
+  timestamp: number;
+  id: string;
+  imagePreview?: string;
+}
+
+export default function App() {
+  const [images, setImages] = useState<string[]>([]);
+  const [results, setResults] = useState<(MangaResult | null)[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showOverlays, setShowOverlays] = useState(true);
+  const [targetLanguage, setTargetLanguage] = useState("Vietnamese");
+  const [userPrompt, setUserPrompt] = useState("");
+  const [customApiKey, setCustomApiKey] = useState("");
+  const [hoveredBubble, setHoveredBubble] = useState<number | null>(null);
+  const [selectedBubble, setSelectedBubble] = useState<Bubble | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<MangaResult[]>([]);
+  const [progress, setProgress] = useState(0);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+
+  // Progress simulation
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isProcessing) {
+      setProgress(10);
+      interval = setInterval(() => {
+        setProgress((prev) => (prev < 90 ? prev + Math.random() * 15 : prev));
+      }, 800);
+    } else {
+      setProgress(0);
+    }
+    return () => clearInterval(interval);
+  }, [isProcessing]);
+
+  // Load history
+  useEffect(() => {
+    const saved = localStorage.getItem("mangalens_history");
+    if (saved) {
+      try {
+        setHistory(JSON.parse(saved));
+      } catch (e) {
+        console.error("Lỗi khi đọc lịch sử", e);
+      }
+    }
+  }, []);
+
+  const saveToHistory = (newResult: MangaResult) => {
+    const updated = [newResult, ...history].slice(0, 15);
+    setHistory(updated);
+    localStorage.setItem("mangalens_history", JSON.stringify(updated));
+  };
+
+  const deleteHistoryItem = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = history.filter(item => item.id !== id);
+    setHistory(updated);
+    localStorage.setItem("mangalens_history", JSON.stringify(updated));
+  };
+
+  const clearHistory = () => {
+    setHistory([]);
+    localStorage.removeItem("mangalens_history");
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopyStatus("Đã sao chép!");
+    setTimeout(() => setCopyStatus(null), 2000);
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      const fileArray = Array.from(files).slice(0, 10) as File[];
+      
+      try {
+        const loadPromises = fileArray.map(file => {
+          return new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (event) => resolve(event.target?.result as string);
+            reader.onerror = (error) => reject(error);
+            reader.readAsDataURL(file);
+          });
+        });
+
+        const newImages = await Promise.all(loadPromises);
+        setImages(newImages);
+        setResults(new Array(newImages.length).fill(null));
+        setActiveIndex(0);
+        setHoveredBubble(null);
+        setSelectedBubble(null);
+      } catch (error) {
+        console.error("Lỗi khi tải ảnh:", error);
+        alert("Có lỗi xảy ra khi tải một số ảnh. Vui lòng thử lại.");
+      }
+    }
+  };
+
+  const resetCanvas = () => {
+    setImages([]);
+    setResults([]);
+    setActiveIndex(0);
+    setHoveredBubble(null);
+    setSelectedBubble(null);
+  };
+
+  const processImage = async () => {
+    const currentImage = images[activeIndex];
+    if (!currentImage) return;
+    setIsProcessing(true);
+    try {
+      const response = await fetch("/api/translate-manga", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: currentImage, targetLanguage, userPrompt, customApiKey }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        if (data.error === "QUOTA_EXCEEDED") {
+          alert("Hạn mức dịch thuật miễn phí đã hết! Bạn có thể sử dụng mã API riêng của mình trong phần Cài đặt để tiếp tục không giới hạn.");
+          setIsSettingsOpen(true);
+        } else {
+          alert("Lỗi: " + (data.message || data.error));
+        }
+        return;
+      }
+
+      const newResult: MangaResult = {
+          ...data,
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp: Date.now(),
+          imagePreview: currentImage
+        };
+        
+        const newResults = [...results];
+        newResults[activeIndex] = newResult;
+        setResults(newResults);
+        saveToHistory(newResult);
+    } catch (error) {
+      console.error("Xử lý thất bại:", error);
+      alert("Không thể kết nối với máy chủ dịch thuật.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const currentImage = images[activeIndex];
+  const currentResult = results[activeIndex];
+
+  return (
+    <div className="min-h-screen bg-[#F0F0ED] text-[#141414] font-sans selection:bg-[#141414] selection:text-[#E4E3E0] flex flex-col h-screen overflow-hidden">
+      
+      {/* Settings Overlay */}
+      <AnimatePresence>
+        {isSettingsOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setIsSettingsOpen(false)}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100]"
+            />
+            <motion.div 
+              initial={{ x: "-100%" }} animate={{ x: 0 }} exit={{ x: "-100%" }}
+              className="fixed inset-y-0 left-0 w-full max-w-sm bg-[#F0F0ED] border-r border-[#141414] z-[101] shadow-2xl flex flex-col"
+            >
+              <div className="p-4 md:p-6 border-b border-[#141414] flex justify-between items-center bg-[#141414] text-[#E4E3E0]">
+                <h2 className="font-bold text-sm uppercase tracking-tight">Cấu hình bản dịch</h2>
+                <button onClick={() => setIsSettingsOpen(false)} className="hover:rotate-90 transition-transform"><X size={20}/></button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 space-y-8">
+                {/* Language Selection moved here */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Languages size={16} className="text-blue-600" />
+                    <span className="text-xs font-bold uppercase">Dịch sang ngôn ngữ</span>
+                  </div>
+                  <div className="relative border-2 border-[#141414] bg-white">
+                    <select 
+                      value={targetLanguage}
+                      onChange={(e) => setTargetLanguage(e.target.value)}
+                      className="w-full p-3 text-xs font-bold bg-transparent outline-none appearance-none cursor-pointer"
+                    >
+                      <option value="Vietnamese">Tiếng Việt (VIE)</option>
+                      <option value="English">Tiếng Anh (ENG)</option>
+                      <option value="French">Tiếng Pháp (FRA)</option>
+                      <option value="Spanish">Tiếng Tây Ban Nha (ESP)</option>
+                      <option value="Japanese">Tiếng Nhật (JPN)</option>
+                    </select>
+                    <ChevronRight size={14} className="absolute right-3 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Key size={16} className="text-orange-600" />
+                      <span className="text-xs font-bold uppercase">Mã API Gemini</span>
+                    </div>
+                    <a 
+                      href="https://aistudio.google.com/app/apikey" 
+                      target="_blank" 
+                      rel="noreferrer"
+                      className="text-[10px] font-black text-blue-600 hover:underline flex items-center gap-1"
+                    >
+                      LẤY MÃ MIỄN PHÍ <Scan size={10} />
+                    </a>
+                  </div>
+                  <input 
+                    type="password" 
+                    value={customApiKey}
+                    onChange={(e) => setCustomApiKey(e.target.value)}
+                    placeholder="Dán mã API cá nhân (Dùng hạn mức riêng)..."
+                    className="w-full bg-white border-2 border-[#141414] p-3 text-xs outline-none focus:bg-orange-50 transition-colors"
+                  />
+                  <p className="text-[9px] opacity-50 italic leading-tight">
+                    * Nếu hạn mức mặc định đã hết, hãy tạo API Key riêng tại Google AI Studio để tiếp tục sử dụng miễn phí.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Info size={16} />
+                    <span className="text-xs font-bold uppercase">Bối cảnh truyện (Gợi ý cho AI)</span>
+                  </div>
+                  <textarea 
+                    value={userPrompt}
+                    onChange={(e) => setUserPrompt(e.target.value)}
+                    placeholder="Ví dụ: Nhân vật là kiếm sĩ, văn phong cổ trang..."
+                    className="w-full h-32 bg-white border-2 border-[#141414] p-3 text-xs outline-none focus:bg-blue-50 transition-colors resize-none"
+                  />
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* History Overlay */}
+      <AnimatePresence>
+        {showHistory && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setShowHistory(false)}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100]"
+            />
+            <motion.div 
+              initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }}
+              className="fixed inset-y-0 right-0 w-full max-w-sm bg-[#F0F0ED] border-l border-[#141414] z-[101] shadow-2xl flex flex-col"
+            >
+              <div className="p-4 md:p-6 border-b border-[#141414] flex justify-between items-center bg-[#141414] text-[#E4E3E0]">
+                <h2 className="font-bold text-sm uppercase tracking-tight">Lịch sử bản dịch</h2>
+                <div className="flex items-center gap-2">
+                  {history.length > 0 && (
+                    <button 
+                      onClick={clearHistory}
+                      className="p-2 hover:bg-red-500 transition-colors text-red-500 hover:text-white"
+                      title="Xoá tất cả"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                  <button onClick={() => setShowHistory(false)}><X size={20}/></button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {history.length > 0 ? history.map((item) => (
+                  <div 
+                    key={item.id}
+                    onClick={() => {
+                      setImages([item.imagePreview || ""]);
+                      setResults([item]);
+                      setActiveIndex(0);
+                      setShowHistory(false);
+                    }}
+                    className="bg-white border-2 border-[#141414] p-3 cursor-pointer hover:bg-[#141414] hover:text-white transition-all group relative"
+                  >
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="text-[10px] font-mono opacity-50">
+                        {new Date(item.timestamp).toLocaleString("vi-VN")}
+                      </span>
+                      <button 
+                        onClick={(e) => deleteHistoryItem(item.id, e)}
+                        className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    <p className="text-xs font-bold truncate uppercase">{item.scene_context || "Truyện không tên"}</p>
+                    <div className="mt-2 text-[10px] opacity-40 font-bold italic">
+                      {item.total_bubbles} ô thoại được dịch
+                    </div>
+                  </div>
+                )) : (
+                  <div className="h-full flex flex-col items-center justify-center opacity-30 text-black">
+                    <History size={40} strokeWidth={1} />
+                    <p className="mt-4 text-xs font-bold uppercase tracking-widest text-[#141414]">Chưa có dữ liệu</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Header */}
+      <header className="border-b border-[#141414] p-2 md:p-4 bg-[#F0F0ED] flex justify-between items-center shrink-0 z-50">
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => setIsSettingsOpen(true)}
+            className="p-2 border-2 border-[#141414] hover:bg-black hover:text-white transition-all"
+            title="Cấu hình"
+          >
+            <Menu size={18} />
+          </button>
+          
+          <div className="flex items-center gap-2 ml-2">
+            <div className="bg-[#141414] text-[#F0F0ED] p-1.5 rounded-sm">
+              <Scan size={18} />
+            </div>
+            <h1 className="font-black uppercase tracking-tighter text-xs md:text-sm">MangaLens</h1>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => setShowHistory(true)}
+            className="p-2 border-2 border-[#141414] hover:bg-black hover:text-white transition-all"
+            title="Xem lịch sử"
+          >
+            <Clock size={18} />
+          </button>
+
+          <button 
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-1.5 bg-[#141414] text-[#F0F0ED] px-4 py-2 text-[10px] md:text-xs font-black uppercase hover:opacity-90 active:scale-95 transition-all"
+          >
+            {currentImage ? <RotateCcw size={14} /> : <Upload size={14} />}
+            <span>{currentImage ? "Đổi bộ ảnh" : "Tải bộ ảnh lên (Tối đa 10)"}</span>
+          </button>
+          <input type="file" ref={fileInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" multiple />
+        </div>
+      </header>
+
+      {/* Main Container */}
+      <main className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+        
+        {/* Workspace Canvas */}
+        <section className="flex-1 bg-[#DEDDD9] border-b lg:border-b-0 lg:border-r border-[#141414] relative flex flex-col shadow-inner min-h-0 lg:shrink h-full overflow-hidden">
+          
+          {/* Viewing Area */}
+          <div className="flex-1 relative flex items-center justify-center p-2 md:p-6 min-h-0 bg-[#DEDDD9]">
+            {!currentImage ? (
+              <div className="text-center space-y-6">
+                <div 
+                  className="w-32 h-32 md:w-48 md:h-48 border-4 border-dashed border-[#141414]/20 rounded-xl mx-auto flex items-center justify-center cursor-pointer hover:border-[#141414]/40 transition-colors"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload size={48} strokeWidth={1} className="opacity-20" />
+                </div>
+                <p className="text-[10px] md:text-xs font-black uppercase tracking-[0.3em] opacity-30">Chọn tối đa 10 ảnh để bắt đầu</p>
+              </div>
+            ) : (
+              <div className="relative shadow-2xl border-2 border-[#141414] bg-white overflow-hidden flex items-center justify-center">
+                <div className="relative inline-block max-w-full max-h-full p-0">
+                  <img 
+                    ref={imageRef} 
+                    src={currentImage} 
+                    alt="Manga Preview" 
+                    className="max-w-full max-h-[calc(100vh-280px)] lg:max-h-[calc(100vh-180px)] block object-contain" 
+                  />
+                  
+                  {/* Overlays */}
+                  {currentResult && showOverlays && currentResult.bubbles.map((bubble) => (
+                    <div 
+                      key={bubble.bubble_id}
+                      className={`absolute border-2 transition-all duration-300 cursor-pointer ${
+                        hoveredBubble === bubble.bubble_id || selectedBubble?.bubble_id === bubble.bubble_id
+                          ? "border-blue-500 bg-blue-500/10 z-20 shadow-[0_0_20px_rgba(59,130,246,0.3)]" 
+                          : "border-[#141414]/20 bg-black/2"
+                      }`}
+                      style={{
+                        left: `${bubble.bounding_box.x / 10}%`,
+                        top: `${bubble.bounding_box.y / 10}%`,
+                        width: `${bubble.bounding_box.width / 10}%`,
+                        height: `${bubble.bounding_box.height / 10}%`,
+                      }}
+                      onMouseEnter={() => setHoveredBubble(bubble.bubble_id)}
+                      onMouseLeave={() => setHoveredBubble(null)}
+                      onClick={() => setSelectedBubble(bubble)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Bubble Details Modal - Stays absolute with high z-index */}
+            <AnimatePresence>
+              {selectedBubble && (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                  className="absolute z-[100] bottom-4 left-4 right-4 md:left-auto md:right-4 md:w-80 bg-white border-2 border-[#141414] shadow-2xl p-4 flex flex-col gap-3"
+                >
+                  <div className="flex justify-between items-center bg-[#141414] text-white -m-4 mb-0 p-3">
+                    <span className="text-[10px] font-black italic">CHI TIẾT Ô THOẠI #{selectedBubble.bubble_id}</span>
+                    <button onClick={() => setSelectedBubble(null)} className="hover:scale-110 transition-transform"><X size={16} /></button>
+                  </div>
+                  <div className="space-y-4 pt-2">
+                    <div className="space-y-1">
+                      <span className="text-[9px] font-black uppercase opacity-40">Nguyên văn:</span>
+                      <p className="text-[11px] bg-black/5 p-2 italic leading-relaxed italic">{selectedBubble.original_text}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-[9px] font-black uppercase text-blue-600">Bản dịch:</span>
+                      <div className="relative">
+                        <p className="text-xs font-black p-2 border-2 border-dashed border-blue-500 leading-tight pr-10">{selectedBubble.translated_text}</p>
+                        <button 
+                          onClick={() => copyToClipboard(selectedBubble.translated_text)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 hover:bg-blue-50 transition-colors text-blue-600"
+                          title="Sao chép"
+                        >
+                          {copyStatus ? <span className="text-[8px] font-black absolute -top-8 right-0 bg-blue-600 text-white p-1 whitespace-nowrap">{copyStatus}</span> : null}
+                          <Scan size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+          
+          {/* Dedicated Controls Toolbar - No longer absolute on top of image */}
+          {currentImage && (
+            <div className="bg-[#F0F0ED] border-t-2 border-[#141414] p-3 md:p-4 z-40">
+              <div className="max-w-2xl mx-auto flex flex-col gap-2">
+                {/* Progress Bar */}
+                {isProcessing && (
+                  <div className="h-1.5 bg-[#141414]/10 w-full overflow-hidden rounded-full">
+                    <motion.div 
+                      className="h-full bg-blue-600"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${progress}%` }}
+                    />
+                  </div>
+                )}
+                
+                <div className="flex items-center gap-2">
+                  {/* Image Actions */}
+                  <div className="flex items-center bg-white border-2 border-[#141414] rounded-sm overflow-hidden h-10 md:h-12">
+                    <button 
+                      onClick={() => setShowOverlays(!showOverlays)} 
+                      className={`px-4 h-full transition-colors ${showOverlays ? 'bg-[#141414] text-white' : 'hover:bg-[#141414]/10'}`}
+                      title={showOverlays ? "Ẩn bản dịch" : "Hiện bản dịch"}
+                    >
+                      {showOverlays ? <Eye size={18} /> : <EyeOff size={18} />}
+                    </button>
+                    <button 
+                      onClick={resetCanvas}
+                      className="px-4 h-full hover:bg-red-500 hover:text-white transition-colors border-l-2 border-[#141414]"
+                      title="Xóa bộ ảnh"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+
+                  {/* Navigation */}
+                  {images.length > 1 && (
+                    <div className="flex-1 flex items-center justify-between px-2 bg-white h-10 md:h-12 border-2 border-[#141414] rounded-sm">
+                      <button 
+                        disabled={activeIndex === 0 || isProcessing}
+                        onClick={() => setActiveIndex(prev => prev - 1)}
+                        className="p-2 disabled:opacity-20 hover:bg-[#141414] hover:text-white transition-all transform active:scale-95"
+                      >
+                        <ChevronRight size={18} className="rotate-180" />
+                      </button>
+                      <div className="flex flex-col items-center">
+                        <span className="text-[10px] md:text-xs font-black uppercase tracking-widest">
+                          Trang {activeIndex + 1} / {images.length}
+                        </span>
+                      </div>
+                      <button 
+                        disabled={activeIndex === images.length - 1 || isProcessing}
+                        onClick={() => setActiveIndex(prev => prev + 1)}
+                        className="p-2 disabled:opacity-20 hover:bg-[#141414] hover:text-white transition-all transform active:scale-95"
+                      >
+                        <ChevronRight size={18} />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Main Action */}
+                  <button 
+                    onClick={processImage}
+                    disabled={isProcessing}
+                    className={`flex-[1.5] md:flex-none md:min-w-[180px] h-10 md:h-12 px-6 bg-[#141414] text-white text-[10px] md:text-xs font-black uppercase flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-95 disabled:opacity-50`}
+                  >
+                    {isProcessing ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Languages size={16} />
+                    )}
+                    <span>
+                      {isProcessing ? "Đang dịch..." : (currentResult ? "Dịch lại trang" : "Dịch trang này")}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isProcessing && (
+             <div className="absolute inset-0 bg-white/20 backdrop-blur-[1px] z-30 pointer-events-none" />
+          )}
+        </section>
+
+        {/* Results Sidebar */}
+        <aside className="w-full lg:w-[450px] bg-[#F0F0ED] border-l border-[#141414] flex flex-col h-[30vh] lg:h-auto overflow-hidden shrink-0">
+          <div className="bg-black text-[#F0F0ED] p-4 flex justify-between items-center shrink-0">
+            <h2 className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
+              <Clock size={12} /> Dữ liệu đã trích xuất
+            </h2>
+            {currentResult && <div className="text-[10px] font-mono font-bold">{currentResult.total_bubbles} Ô THOẠI</div>}
+          </div>
+
+          <div className="flex-1 overflow-y-auto divide-y-2 divide-[#141414]">
+            {currentResult ? (
+              <>
+                <div className="p-4 bg-blue-50 border-b-2 border-[#141414]">
+                   <h4 className="text-[9px] uppercase font-bold opacity-40 mb-1">Cảnh truyện:</h4>
+                  <p className="text-[12px] font-black leading-tight italic">"{currentResult.scene_context || "Không có bối cảnh chi tiết."}"</p>
+                </div>
+
+                {currentResult.bubbles.map((bubble) => (
+                  <div 
+                    key={bubble.bubble_id}
+                    className={`p-6 transition-all cursor-pointer ${
+                      hoveredBubble === bubble.bubble_id || selectedBubble?.bubble_id === bubble.bubble_id ? "bg-white border-l-[10px] border-blue-600 pl-4" : "hover:bg-white/60"
+                    }`}
+                    onMouseEnter={() => setHoveredBubble(bubble.bubble_id)}
+                    onMouseLeave={() => setHoveredBubble(null)}
+                    onClick={() => setSelectedBubble(bubble)}
+                  >
+                    <div className="flex justify-between items-center mb-5">
+                      <span className="text-[10px] font-black px-2 py-1 bg-black text-white rounded-sm italic">PHÂN ĐOẠN #{bubble.bubble_id}</span>
+                      <span className="text-[10px] uppercase font-bold opacity-30 italic">Hòa hợp: {Math.round(bubble.confidence_score * 100)}%</span>
+                    </div>
+
+                    <div className="space-y-5">
+                      <div className="space-y-1.5 grayscale opacity-40 hover:grayscale-0 hover:opacity-100 transition-all cursor-default">
+                         <h5 className="text-[9px] font-black uppercase tracking-tighter">Văn bản gốc JPN/ENG:</h5>
+                         <p className="text-[11px] leading-relaxed font-medium bg-[#141414]/5 p-2 border-l border-black">
+                          {bubble.original_text}
+                        </p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <h5 className="text-[9px] font-black uppercase tracking-tighter text-blue-600">Bản dịch yêu cầu ({targetLanguage}):</h5>
+                        <p className="text-sm font-black leading-snug tracking-tight text-[#141414]">
+                          {bubble.translated_text}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center p-12 opacity-10 space-y-4">
+                <Languages size={80} strokeWidth={0.5} />
+                <div className="text-center">
+                  <p className="text-xs font-black uppercase tracking-widest">Sẵn sàng phiên dịch</p>
+                  <p className="text-[10px] mt-2 italic">Tải ảnh lên và nhấn "Dịch ngay" để bắt đầu</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <footer className="p-3 bg-black text-[#F0F0ED] flex justify-between items-center text-[9px] font-bold uppercase shrink-0">
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isProcessing ? 'bg-blue-400 animate-pulse' : 'bg-green-500'}`} />
+              <span className="opacity-60">{isProcessing ? 'Đang thực thi thuật toán...' : 'Máy chủ sẵn sàng'}</span>
+            </div>
+            <span className="opacity-40 italic">{new Date().toLocaleTimeString("vi-VN")}</span>
+          </footer>
+        </aside>
+
+      </main>
+    </div>
+  );
+}
