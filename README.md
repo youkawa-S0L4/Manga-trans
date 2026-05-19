@@ -1,34 +1,16 @@
 <div align="center">
-# Mangalens AI Comic Translator
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-Mangalens AI Comic Translator là một ứng dụng web giúp dịch thuật truyện tranh tự động bằng trí tuệ nhân tạo (AI).
+# Run and deploy your AI Studio app
 
-## Tính năng chính
-* **Dịch thuật tự động:** Sử dụng sức mạnh của Google Gemini để dịch nội dung văn bản trong truyện tranh.
-* **Giao diện thân thiện:** Được xây dựng bằng React, mang lại trải nghiệm mượt mà.
+This contains everything you need to run your app locally.
 
-## Cấu hình
-Ứng dụng yêu cầu các biến môi trường sau (xem file `.env.example`):
-* `GEMINI_API_KEY`: Khóa API để truy cập dịch vụ Gemini AI.
-* `APP_URL`: URL của ứng dụng.
+View your app in AI Studio: https://ai.studio/apps/151d58f1-a83b-4b42-b726-f5014b0580b8
 
-## Cài đặt và Chạy
-1.  **Cài đặt các phụ thuộc:**
-    ```bash
-    npm install
-    ```
-2.  **Cấu hình biến môi trường:**
-    Sao chép file `.env.example` thành `.env` và điền các giá trị thực tế của bạn.
-3.  **Chạy ứng dụng:**
-    ```bash
-    npm start
-    ```
+## Run Locally
 
-## Cấu trúc dự án
-* `/dist`: Chứa các tệp đã được build để triển khai (production build).
-* `/.env.example`: File mẫu để cấu hình môi trường.
-* `/.gitignore`: File quy định các tệp/thư mục không đưa lên Git.
-
+**Prerequisites:**  Node.js
 
 
 1. Install dependencies:

@@ -25,7 +25,7 @@ const ai = new GoogleGenAI({
 // API Endpoint for Manga Translation
 app.post("/api/translate-manga", async (req, res) => {
   try {
-    const { image, targetLanguage = "Vietnamese", userPrompt = "", customApiKey = "", pronounSettings = "" } = req.body;
+    const { image, targetLanguage = "Vietnamese", userPrompt = "", customApiKey = "", pronounSettings = "", translationTone = "standard" } = req.body;
 
     if (!image) {
        res.status(400).json({ error: "No image data provided" });
@@ -39,6 +39,17 @@ app.post("/api/translate-manga", async (req, res) => {
       res.status(401).json({ error: "Gemini API Key is missing. Please provide one in settings." });
       return;
     }
+
+    // Define tone prompts
+    const tonePrompts: Record<string, string> = {
+      standard: "Translate in a natural, neutral, and context-appropriate manga style.",
+      cute: "Translate in a highly cute, youthful, adorable, and sweet tone. For Vietnamese, use friendly pronouns and soft, cute sentence endings (like 'nhé', 'nha', 'ạ', 'hihi', 'nè').",
+      formal: "Translate in a respectful, polite, formal, and elegant tone. Use formal honorifics and clear, sophisticated grammar.",
+      humorous: "Translate in a funny, witty, and humorous tone. Adapt jokes creatively and use modern comedic slang/memes if suitable for the context.",
+      hentai: "Translate in an adult, erotic, highly sensual, provocative, hot, and explicit style (hentai/romance genre). For Vietnamese, use suggestive, sweet, panting, and passionate words (such as adding 'ưm...', 'a...', 'hức...', 'nóng... quá', 'chồng yêu', 'vợ yêu' depending on the relationship) to make the text sound intensely sexy, playful, and passionate, fitting for adult manga translations.",
+    };
+
+    const selectedTonePrompt = tonePrompts[translationTone] || tonePrompts.standard;
 
     // Initialize Gemini with the specific key for this request
     const requestAi = new GoogleGenAI({
@@ -65,6 +76,7 @@ app.post("/api/translate-manga", async (req, res) => {
         {
           text: `Analyze this manga page. Identify all speech bubbles, captions, and text areas.
           Translate the text to ${targetLanguage}.
+          TRANSLATION TONE STYLE: ${selectedTonePrompt}
           ${pronounSettings ? `CONSISTENT PRONOUNS/HONORIFICS: ${pronounSettings}` : ""}
           ${userPrompt ? `ADDITIONAL CONTEXT/INSTRUCTIONS: ${userPrompt}` : ""}
           Use the context of the entire page to ensure natural, conversational translation.

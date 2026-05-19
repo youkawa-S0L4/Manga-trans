@@ -1,5 +1,5 @@
 {
-  "name": "MangaLens: AI Comic Translator",
+  "name": "MioManga: AI Comic Translator",
   "description": "An AI-powered tool that detects manga speech bubbles, extracts original text, and translates it contextually while providing redraw coordinates.",
   "requestFramePermissions": [],
   "majorCapabilities": [
