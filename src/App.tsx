@@ -34,10 +34,13 @@ export default function App() {
   const [results, setResults] = useState<(MangaResult | null)[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isProcessingAll, setIsProcessingAll] = useState(false);
+  const [processedCount, setProcessedCount] = useState(0);
   const [showOverlays, setShowOverlays] = useState(true);
-  const [targetLanguage, setTargetLanguage] = useState("Vietnamese");
-  const [userPrompt, setUserPrompt] = useState("");
-  const [customApiKey, setCustomApiKey] = useState("");
+  const [targetLanguage, setTargetLanguage] = useState(() => localStorage.getItem("mangalens_lang") || "Vietnamese");
+  const [userPrompt, setUserPrompt] = useState(() => localStorage.getItem("mangalens_prompt") || "");
+  const [customApiKey, setCustomApiKey] = useState(() => localStorage.getItem("mangalens_api_key") || "");
+  const [pronounSettings, setPronounSettings] = useState(() => localStorage.getItem("mangalens_pronouns") || "");
   const [hoveredBubble, setHoveredBubble] = useState<number | null>(null);
   const [selectedBubble, setSelectedBubble] = useState<Bubble | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -52,16 +55,37 @@ export default function App() {
   // Progress simulation
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isProcessing) {
+    if (isProcessing && !isProcessingAll) {
       setProgress(10);
       interval = setInterval(() => {
         setProgress((prev) => (prev < 90 ? prev + Math.random() * 15 : prev));
       }, 800);
+    } else if (isProcessingAll) {
+      // For processing all, progress is based on count
+      const baseProgress = (processedCount / images.length) * 100;
+      setProgress(baseProgress);
     } else {
       setProgress(0);
     }
     return () => clearInterval(interval);
-  }, [isProcessing]);
+  }, [isProcessing, isProcessingAll, processedCount, images.length]);
+
+  // Persist settings
+  useEffect(() => {
+    localStorage.setItem("mangalens_lang", targetLanguage);
+  }, [targetLanguage]);
+
+  useEffect(() => {
+    localStorage.setItem("mangalens_prompt", userPrompt);
+  }, [userPrompt]);
+
+  useEffect(() => {
+    localStorage.setItem("mangalens_api_key", customApiKey);
+  }, [customApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem("mangalens_pronouns", pronounSettings);
+  }, [pronounSettings]);
 
   // Load history
   useEffect(() => {
@@ -135,15 +159,24 @@ export default function App() {
     setSelectedBubble(null);
   };
 
-  const processImage = async () => {
-    const currentImage = images[activeIndex];
-    if (!currentImage) return;
-    setIsProcessing(true);
+  const processImage = async (index: number = activeIndex) => {
+    const targetImage = images[index];
+    if (!targetImage) return null;
+    
+    // If not in "process all" mode, we set the global isProcessing
+    if (!isProcessingAll) setIsProcessing(true);
+    
     try {
       const response = await fetch("/api/translate-manga", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: currentImage, targetLanguage, userPrompt, customApiKey }),
+        body: JSON.stringify({ 
+          image: targetImage, 
+          targetLanguage, 
+          userPrompt, 
+          customApiKey, 
+          pronounSettings 
+        }),
       });
       
       const data = await response.json();
@@ -153,28 +186,70 @@ export default function App() {
           alert("Hạn mức dịch thuật miễn phí đã hết! Bạn có thể sử dụng mã API riêng của mình trong phần Cài đặt để tiếp tục không giới hạn.");
           setIsSettingsOpen(true);
         } else {
-          alert("Lỗi: " + (data.message || data.error));
+          alert(`Lỗi trang ${index + 1}: ` + (data.message || data.error));
         }
-        return;
+        return null;
       }
 
       const newResult: MangaResult = {
-          ...data,
-          id: Math.random().toString(36).substr(2, 9),
-          timestamp: Date.now(),
-          imagePreview: currentImage
-        };
-        
-        const newResults = [...results];
-        newResults[activeIndex] = newResult;
-        setResults(newResults);
-        saveToHistory(newResult);
+        ...data,
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: Date.now(),
+        imagePreview: targetImage
+      };
+      
+      return newResult;
     } catch (error) {
-      console.error("Xử lý thất bại:", error);
-      alert("Không thể kết nối với máy chủ dịch thuật.");
+      console.error(`Xử lý trang ${index + 1} thất bại:`, error);
+      alert(`Không thể kết nối với máy chủ dịch thuật cho trang ${index + 1}.`);
+      return null;
     } finally {
-      setIsProcessing(false);
+      if (!isProcessingAll) setIsProcessing(false);
     }
+  };
+
+  const handleSingleProcess = async () => {
+    const result = await processImage();
+    if (result) {
+      const newResults = [...results];
+      newResults[activeIndex] = result;
+      setResults(newResults);
+      saveToHistory(result);
+    }
+  };
+
+  const processAllImages = async () => {
+    if (images.length === 0 || isProcessing || isProcessingAll) return;
+    
+    setIsProcessingAll(true);
+    setIsProcessing(true);
+    setProcessedCount(0);
+    
+    const newResults = [...results];
+    
+    for (let i = 0; i < images.length; i++) {
+      // Only process if not already processed OR if user wants to refresh (we'll do all for "Translate All")
+      // But let's skip already processed ones if we want to be efficient? 
+      // Most users expect "Translate All" to fill in the blanks or redo everything.
+      // Let's redo everything for simplicity/consistency as standard "Batch" behavior.
+      
+      setActiveIndex(i); // Move focus as we process
+      const result = await processImage(i);
+      
+      if (result) {
+        newResults[i] = result;
+        setResults([...newResults]); // Update UI incrementally
+        saveToHistory(result);
+      } else {
+        // If one fails and it's a quota error, we might want to stop
+        // For now, let's just continue
+      }
+      setProcessedCount(i + 1);
+    }
+    
+    setIsProcessingAll(false);
+    setIsProcessing(false);
+    setProgress(0);
   };
 
   const currentImage = images[activeIndex];
@@ -248,6 +323,22 @@ export default function App() {
                   />
                   <p className="text-[9px] opacity-50 italic leading-tight">
                     * Nếu hạn mức mặc định đã hết, hãy tạo API Key riêng tại Google AI Studio để tiếp tục sử dụng miễn phí.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Clock size={16} className="text-purple-600" />
+                    <span className="text-xs font-bold uppercase">Xưng hô nhất quán</span>
+                  </div>
+                  <textarea 
+                    value={pronounSettings}
+                    onChange={(e) => setPronounSettings(e.target.value)}
+                    placeholder="Ví dụ: Nhân vật chính nam (A) gọi nữ (B) là 'em', B gọi A là 'anh'. C là kẻ địch gọi A là 'ngươi'..."
+                    className="w-full h-24 bg-white border-2 border-[#141414] p-3 text-xs outline-none focus:bg-purple-50 transition-colors resize-none"
+                  />
+                  <p className="text-[9px] opacity-50 italic">
+                    * Giúp AI giữ cách xưng hô ổn định giữa các trang truyện.
                   </p>
                 </div>
 
@@ -526,21 +617,28 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Main Action */}
-                  <button 
-                    onClick={processImage}
-                    disabled={isProcessing}
-                    className={`flex-[1.5] md:flex-none md:min-w-[180px] h-10 md:h-12 px-6 bg-[#141414] text-white text-[10px] md:text-xs font-black uppercase flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-95 disabled:opacity-50`}
-                  >
-                    {isProcessing ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : (
-                      <Languages size={16} />
+                  {/* Main Action Group */}
+                  <div className="flex items-center gap-1 flex-1 md:flex-none">
+                    <button 
+                      onClick={handleSingleProcess}
+                      disabled={isProcessing}
+                      className={`flex-1 h-10 md:h-12 px-4 bg-[#141414] text-white text-[10px] font-black uppercase flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-95 disabled:opacity-50`}
+                    >
+                      {isProcessing && !isProcessingAll ? <Loader2 size={14} className="animate-spin" /> : <Languages size={14} />}
+                      <span>{currentResult ? "Dịch lại" : "Dịch trang"}</span>
+                    </button>
+
+                    {images.length > 1 && (
+                      <button 
+                        onClick={processAllImages}
+                        disabled={isProcessing}
+                        className={`flex-1 h-10 md:h-12 px-4 bg-blue-600 text-white text-[10px] font-black uppercase flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-95 disabled:opacity-50 border-l border-white/20`}
+                      >
+                        {isProcessingAll ? <Loader2 size={14} className="animate-spin" /> : <Scan size={14} />}
+                        <span>Dịch tất cả</span>
+                      </button>
                     )}
-                    <span>
-                      {isProcessing ? "Đang dịch..." : (currentResult ? "Dịch lại trang" : "Dịch trang này")}
-                    </span>
-                  </button>
+                  </div>
                 </div>
               </div>
             </div>

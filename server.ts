@@ -25,7 +25,7 @@ const ai = new GoogleGenAI({
 // API Endpoint for Manga Translation
 app.post("/api/translate-manga", async (req, res) => {
   try {
-    const { image, targetLanguage = "Vietnamese", userPrompt = "", customApiKey = "" } = req.body;
+    const { image, targetLanguage = "Vietnamese", userPrompt = "", customApiKey = "", pronounSettings = "" } = req.body;
 
     if (!image) {
        res.status(400).json({ error: "No image data provided" });
@@ -65,6 +65,7 @@ app.post("/api/translate-manga", async (req, res) => {
         {
           text: `Analyze this manga page. Identify all speech bubbles, captions, and text areas.
           Translate the text to ${targetLanguage}.
+          ${pronounSettings ? `CONSISTENT PRONOUNS/HONORIFICS: ${pronounSettings}` : ""}
           ${userPrompt ? `ADDITIONAL CONTEXT/INSTRUCTIONS: ${userPrompt}` : ""}
           Use the context of the entire page to ensure natural, conversational translation.
           Provide the precise bounding box coordinates (x, y, width, height) relative to the image dimensions.
