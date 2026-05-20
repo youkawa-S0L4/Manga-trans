@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { 
   Upload, Languages, Scan, ChevronRight, Loader2, 
   Info, Eye, EyeOff, Menu, X, Key, RotateCcw, Clock, History, Trash2,
-  Sparkles, Sun, Moon, Maximize, Minimize
+  Sparkles, Sun, Moon, Maximize, Minimize, Folder, FolderPlus, Plus, AlertTriangle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -21,6 +21,13 @@ interface Bubble {
   confidence_score: number;
 }
 
+interface MangaProject {
+  id: string;
+  name: string;
+  description?: string;
+  timestamp: number;
+}
+
 interface MangaResult {
   total_bubbles: number;
   scene_context: string;
@@ -28,9 +35,67 @@ interface MangaResult {
   timestamp: number;
   id: string;
   imagePreview?: string;
+  projectId?: string;
 }
 
 export default function App() {
+  // Manga Projects States
+  const [projects, setProjects] = useState<MangaProject[]>(() => {
+    const saved = localStorage.getItem("miomanga_projects");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch (e) {
+        console.error("Lỗi đọc projects từ localStorage", e);
+      }
+    }
+    return [
+      {
+        id: "default",
+        name: "Dự án Mặc định",
+        description: "Nơi lưu trữ chung khi chưa phân loại",
+        timestamp: Date.now()
+      }
+    ];
+  });
+
+  const [currentProjectId, setCurrentProjectId] = useState<string>(() => {
+    return localStorage.getItem("miomanga_current_project_id") || "default";
+  });
+
+  const [filterProjectId, setFilterProjectId] = useState<string>("all");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectDesc, setNewProjectDesc] = useState("");
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+
+  // Custom Confirm Dialog State
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {}
+  });
+
+  const triggerConfirm = (title: string, message: string, onConfirm: () => void) => {
+    setConfirmDialog({
+      isOpen: true,
+      title,
+      message,
+      onConfirm: () => {
+        onConfirm();
+        setConfirmDialog(p => ({ ...p, isOpen: false }));
+      }
+    });
+  };
+
   const [images, setImages] = useState<string[]>([]);
   const [results, setResults] = useState<(MangaResult | null)[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -165,12 +230,28 @@ export default function App() {
     localStorage.setItem("miomanga_pronouns", pronounSettings);
   }, [pronounSettings]);
 
+  useEffect(() => {
+    localStorage.setItem("miomanga_projects", JSON.stringify(projects));
+  }, [projects]);
+
+  useEffect(() => {
+    localStorage.setItem("miomanga_current_project_id", currentProjectId);
+  }, [currentProjectId]);
+
   // Load history
   useEffect(() => {
     const saved = localStorage.getItem("miomanga_history") || localStorage.getItem("mangalens_history");
     if (saved) {
       try {
-        setHistory(JSON.parse(saved));
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          // Normalize existing old records to the general project if they don't have one
+          const normalized = parsed.map((item: any) => ({
+            ...item,
+            projectId: item.projectId || "default"
+          }));
+          setHistory(normalized);
+        }
       } catch (e) {
         console.error("Lỗi khi đọc lịch sử", e);
       }
@@ -178,7 +259,13 @@ export default function App() {
   }, []);
 
   const saveToHistory = (newResult: MangaResult) => {
-    const updated = [newResult, ...history].slice(0, 15);
+    // Tag the record under the currently selected manga project
+    const resultWithProject = {
+      ...newResult,
+      projectId: currentProjectId || "default"
+    };
+    // Upgrade database capacity from 15 elements to 100 elements!
+    const updated = [resultWithProject, ...history].slice(0, 100);
     setHistory(updated);
     localStorage.setItem("miomanga_history", JSON.stringify(updated));
   };
@@ -191,9 +278,55 @@ export default function App() {
   };
 
   const clearHistory = () => {
-    setHistory([]);
-    localStorage.removeItem("miomanga_history");
-    localStorage.removeItem("mangalens_history");
+    triggerConfirm(
+      "XÓA TOÀN BỘ LỊCH SỬ",
+      "Bạn có chắc chắn muốn xóa toàn bộ lịch sử bản dịch? Hành động này sẽ xóa vĩnh viễn dữ liệu thuộc mọi dự án và không thể khôi phục.",
+      () => {
+        setHistory([]);
+        localStorage.removeItem("miomanga_history");
+        localStorage.removeItem("mangalens_history");
+      }
+    );
+  };
+
+  const createNewProject = () => {
+    if (!newProjectName.trim()) return;
+    const newProj: MangaProject = {
+      id: "project_" + Math.random().toString(36).substr(2, 9),
+      name: newProjectName.trim(),
+      description: newProjectDesc.trim(),
+      timestamp: Date.now()
+    };
+    setProjects(prev => [...prev, newProj]);
+    setCurrentProjectId(newProj.id);
+    setNewProjectName("");
+    setNewProjectDesc("");
+    setIsCreatingProject(false);
+  };
+
+  const deleteProject = (projectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (projectId === "default") return;
+
+    const projName = projects.find(p => p.id === projectId)?.name || "";
+    triggerConfirm(
+      "XÁC NHẬN XÓA DỰ ÁN",
+      `Bạn có chắc chắn muốn xóa dự án "${projName}"? Toàn bộ các bản dịch trong lịch sử thuộc dự án này sẽ được tự động chuyển về "Dự án Mặc định" để phân loại lại.`,
+      () => {
+        setProjects(prev => prev.filter(p => p.id !== projectId));
+        const updatedHistory = history.map(item => {
+          if ((item.projectId || "default") === projectId) {
+            return { ...item, projectId: "default" };
+          }
+          return item;
+        });
+        setHistory(updatedHistory);
+        localStorage.setItem("miomanga_history", JSON.stringify(updatedHistory));
+        if (currentProjectId === projectId) {
+          setCurrentProjectId("default");
+        }
+      }
+    );
   };
 
   const copyToClipboard = (text: string) => {
@@ -332,6 +465,10 @@ export default function App() {
     setProgress(0);
   };
 
+  const filteredHistory = filterProjectId === "all"
+    ? history
+    : history.filter(item => (item.projectId || "default") === filterProjectId);
+
   const currentImage = images[activeIndex];
   const currentResult = results[activeIndex];
 
@@ -357,6 +494,112 @@ export default function App() {
               </div>
 
               <div className="flex-1 overflow-y-auto p-6 space-y-8">
+                {/* Manga Project Classification System */}
+                <div className={`p-4 border-2 border-dashed ${cBorder} rounded-md space-y-4`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Folder size={16} className="text-blue-500" />
+                      <span className="text-xs font-black uppercase">Phân loại Dự án Manga</span>
+                    </div>
+                    {!isCreatingProject && (
+                      <button 
+                        onClick={() => setIsCreatingProject(true)}
+                        className={`text-[9px] font-black px-2.5 py-1 border-2 ${cBorder} rounded-sm uppercase tracking-tighter active:scale-95 transition-all hover:bg-blue-600 hover:text-white`}
+                      >
+                        + Tạo mới
+                      </button>
+                    )}
+                  </div>
+
+                  {isCreatingProject ? (
+                    <div className="space-y-3 p-3 bg-black/5 dark:bg-white/5 border border-dashed border-blue-500/50 rounded-sm">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold uppercase opacity-60">Tên dự án *</label>
+                        <input 
+                          type="text" 
+                          value={newProjectName}
+                          onChange={(e) => setNewProjectName(e.target.value)}
+                          placeholder="Mio Manga Vol 1..."
+                          className={`w-full p-2 text-xs outline-none focus:bg-blue-500/10 ${cBorder2} ${cInputBg}`}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold uppercase opacity-60">Mô tả ngắn</label>
+                        <input 
+                          type="text" 
+                          value={newProjectDesc}
+                          onChange={(e) => setNewProjectDesc(e.target.value)}
+                          placeholder="Miêu tả tập truyện..."
+                          className={`w-full p-2 text-xs outline-none focus:bg-blue-500/10 ${cBorder2} ${cInputBg}`}
+                        />
+                      </div>
+                      <div className="flex gap-2 justify-end pt-1">
+                        <button 
+                          onClick={() => {
+                            setIsCreatingProject(false);
+                            setNewProjectName("");
+                            setNewProjectDesc("");
+                          }}
+                          className="px-2.5 py-1 text-[9px] font-bold uppercase opacity-60 hover:opacity-100 transition-opacity"
+                        >
+                          Hủy
+                        </button>
+                        <button 
+                          onClick={createNewProject}
+                          disabled={!newProjectName.trim()}
+                          className={`px-3 py-1 text-[9px] font-black uppercase border-2 ${cBorder} ${cPrimaryBtn} disabled:opacity-30`}
+                        >
+                          Tạo
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase opacity-60 block">Dự án hiện tại (Lưu kết quả dịch vào đây)</label>
+                        <div className={`relative ${cBorder2} ${cInputBg}`}>
+                          <select 
+                            value={currentProjectId}
+                            onChange={(e) => setCurrentProjectId(e.target.value)}
+                            className="w-full p-2.5 text-xs font-bold bg-transparent outline-none appearance-none cursor-pointer pr-8"
+                          >
+                            {projects.map(proj => {
+                              const count = history.filter(item => (item.projectId || "default") === proj.id).length;
+                              return (
+                                <option key={proj.id} value={proj.id} className={isDarkMode ? "bg-[#22221F]" : ""}>
+                                  📁 {proj.name} ({count} bản dịch)
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <ChevronRight size={14} className="absolute right-3 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+                        </div>
+                      </div>
+                      
+                      {currentProjectId !== "default" && (
+                        <div className={`flex items-start justify-between bg-black/5 dark:bg-white/5 p-2 border ${cBorder} rounded-sm text-[10px] leading-tight`}>
+                          <div className="flex-1 min-w-0 pr-2">
+                            <span className="font-bold text-[8px] opacity-40 uppercase block">Đang hoạt động:</span>
+                            <span className="font-black text-xs truncate block">{projects.find(p => p.id === currentProjectId)?.name}</span>
+                            {projects.find(p => p.id === currentProjectId)?.description && (
+                              <span className="opacity-65 text-[9px] italic mt-0.5 block truncate">
+                                {projects.find(p => p.id === currentProjectId)?.description}
+                              </span>
+                            )}
+                          </div>
+                          <button 
+                            onClick={(e) => deleteProject(currentProjectId, e)}
+                            className="bg-red-500/15 text-red-500 hover:bg-red-500 hover:text-white p-1 rounded-sm border border-red-500/20 active:scale-95 transition-all text-[9px] font-black uppercase shrink-0"
+                            title="Xóa dự án này"
+                          >
+                            Xóa dự án
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 {/* Language Selection */}
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
@@ -496,38 +739,72 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {history.length > 0 ? history.map((item) => (
-                  <div 
-                    key={item.id}
-                    onClick={() => {
-                      setImages([item.imagePreview || ""]);
-                      setResults([item]);
-                      setActiveIndex(0);
-                      setShowHistory(false);
-                    }}
-                    className={`border-2 p-3 cursor-pointer transition-all group relative ${cBorder} ${cCardBg} hover:bg-[#141414] hover:text-white dark:hover:bg-white dark:hover:text-black`}
+              {/* Filter by project */}
+              <div className="px-4 pt-4 shrink-0">
+                <label className="text-[9px] font-black uppercase opacity-60 block mb-1">🔍 Bộ lọc Dự án Manga</label>
+                <div className={`relative ${cBorder2} ${cInputBg}`}>
+                  <select 
+                    value={filterProjectId}
+                    onChange={(e) => setFilterProjectId(e.target.value)}
+                    className="w-full p-2 text-xs font-bold bg-transparent outline-none appearance-none cursor-pointer pr-8 focus:ring-1 focus:ring-blue-500"
                   >
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="text-[10px] font-mono opacity-50">
-                        {new Date(item.timestamp).toLocaleString("vi-VN")}
-                      </span>
-                      <button 
-                        onClick={(e) => deleteHistoryItem(item.id, e)}
-                        className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                    <option value="all" className={isDarkMode ? "bg-[#22221F]" : ""}>📚 Tất cả Dự án ({history.length})</option>
+                    {projects.map(proj => {
+                      const count = history.filter(item => (item.projectId || "default") === proj.id).length;
+                      return (
+                        <option key={proj.id} value={proj.id} className={isDarkMode ? "bg-[#22221F]" : ""}>
+                          📁 {proj.name} ({count})
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <ChevronRight size={14} className="absolute right-3 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {filteredHistory.length > 0 ? filteredHistory.map((item) => {
+                  const itemProjId = item.projectId || "default";
+                  const itemProject = projects.find(p => p.id === itemProjId) || { name: "Dự án Mặc định" };
+                  return (
+                    <div 
+                      key={item.id}
+                      onClick={() => {
+                        setImages([item.imagePreview || ""]);
+                        setResults([item]);
+                        setActiveIndex(0);
+                        setShowHistory(false);
+                      }}
+                      className={`border-2 p-3 cursor-pointer transition-all group relative ${cBorder} ${cCardBg} hover:bg-[#141414] hover:text-white dark:hover:bg-white dark:hover:text-black`}
+                    >
+                      <div className="flex justify-between items-start mb-1.5">
+                        <span className="text-[9px] font-mono opacity-50">
+                          {new Date(item.timestamp).toLocaleString("vi-VN")}
+                        </span>
+                        <button 
+                          onClick={(e) => deleteHistoryItem(item.id, e)}
+                          className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:scale-110"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                      
+                      <div className="flex items-center gap-1 mb-2">
+                        <span className="inline-flex items-center text-[7.5px] font-black uppercase px-2 py-0.5 rounded-sm bg-blue-500/10 text-blue-500 border border-blue-500/15">
+                          📁 {itemProject.name}
+                        </span>
+                      </div>
+
+                      <p className="text-xs font-bold truncate uppercase">{item.scene_context || "Truyện không tên"}</p>
+                      <div className="mt-1 text-[9px] opacity-40 font-bold italic">
+                        {item.total_bubbles} ô thoại được dịch
+                      </div>
                     </div>
-                    <p className="text-xs font-bold truncate uppercase">{item.scene_context || "Truyện không tên"}</p>
-                    <div className="mt-2 text-[10px] opacity-40 font-bold italic">
-                      {item.total_bubbles} ô thoại được dịch
-                    </div>
-                  </div>
-                )) : (
-                  <div className={`h-full flex flex-col items-center justify-center opacity-30 ${cText}`}>
-                    <History size={40} strokeWidth={1} />
-                    <p className="mt-4 text-xs font-bold uppercase tracking-widest">Chưa có dữ liệu</p>
+                  );
+                }) : (
+                  <div className={`h-full flex flex-col items-center justify-center p-8 opacity-30 ${cText}`}>
+                    <History size={36} strokeWidth={1} />
+                    <p className="mt-3 text-xs font-bold uppercase tracking-widest text-center">Không tìm thấy bản dịch nào</p>
                   </div>
                 )}
               </div>
@@ -848,6 +1125,51 @@ export default function App() {
         </aside>
 
       </main>
+
+      {/* Custom Confirmation Modal */}
+      <AnimatePresence>
+        {confirmDialog.isOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }}
+              onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+              className="fixed inset-0 bg-black/60 backdrop-blur-md z-[200] flex items-center justify-center p-4"
+            >
+              <motion.div 
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                onClick={(e) => e.stopPropagation()}
+                className={`w-full max-w-sm ${cCardBg} border-4 ${cBorder} p-6 shadow-[8px_8px_0px_#000] dark:shadow-[8px_8px_0px_rgba(228,227,224,0.15)] space-y-4`}
+              >
+                <div className="flex items-center gap-3 text-red-500 font-bold border-b-2 border-red-500/20 pb-3">
+                  <AlertTriangle size={24} />
+                  <span className="text-xs font-black tracking-widest uppercase">{confirmDialog.title}</span>
+                </div>
+                <p className="text-xs font-medium leading-relaxed opacity-90 select-none">
+                  {confirmDialog.message}
+                </p>
+                <div className="flex gap-3 justify-end pt-2 font-black transition-all">
+                  <button 
+                    onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+                    className={`px-4 py-2 border-2 ${cBorder} text-[10px] font-black uppercase active:scale-95 transition-all ${cBtnHover}`}
+                  >
+                    Hủy bỏ
+                  </button>
+                  <button 
+                    onClick={confirmDialog.onConfirm}
+                    className="px-4 py-2 bg-red-500 text-white text-[10px] font-black uppercase active:scale-95 hover:bg-red-600 transition-all border-2 border-transparent"
+                  >
+                    Xác nhận
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
