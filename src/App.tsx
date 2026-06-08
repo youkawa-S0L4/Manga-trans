@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from "react";
 import { 
   Upload, Languages, Scan, ChevronRight, Loader2, 
   Info, Eye, EyeOff, Menu, X, Key, RotateCcw, Clock, History, Trash2,
-  Sparkles, Sun, Moon, Maximize, Minimize, Folder, FolderPlus, Plus, AlertTriangle
+  Sparkles, Sun, Moon, Maximize, Minimize, Folder, FolderPlus, Plus, AlertTriangle,
+  Download, BookOpen, FileText, Check, Image as ImageIcon
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -19,6 +20,8 @@ interface Bubble {
   original_text: string;
   translated_text: string;
   confidence_score: number;
+  custom_font_size?: number;
+  custom_offset?: number;
 }
 
 interface MangaProject {
@@ -36,6 +39,29 @@ interface MangaResult {
   id: string;
   imagePreview?: string;
   projectId?: string;
+}
+
+interface ParsedScriptBubble {
+  id: string;
+  page?: string;
+  original?: string;
+  translated?: string;
+  location?: string;
+  confidence?: string;
+}
+
+interface ParsedScriptPage {
+  pageNumber: string;
+  context: string;
+  bubbles: ParsedScriptBubble[];
+}
+
+interface ParsedScript {
+  title: string;
+  description?: string;
+  targetLang?: string;
+  pages: ParsedScriptPage[];
+  rawText: string;
 }
 
 export default function App() {
@@ -83,6 +109,16 @@ export default function App() {
     message: "",
     onConfirm: () => {}
   });
+
+  // Script Viewer States
+  const [scriptDialog, setScriptDialog] = useState<{
+    isOpen: boolean;
+    parsed: ParsedScript | null;
+  }>({
+    isOpen: false,
+    parsed: null
+  });
+  const [scriptViewPageIdx, setScriptViewPageIdx] = useState<number>(0);
 
   const triggerConfirm = (title: string, message: string, onConfirm: () => void) => {
     setConfirmDialog({
@@ -154,14 +190,90 @@ export default function App() {
 
   const [hoveredBubble, setHoveredBubble] = useState<number | null>(null);
   const [selectedBubble, setSelectedBubble] = useState<Bubble | null>(null);
+  const [editingText, setEditingText] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<MangaResult[]>([]);
   const [progress, setProgress] = useState(0);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+
+  // Custom Image Export configuration settings
+  const [exportSettingsOpen, setExportSettingsOpen] = useState(false);
+  const [exportFontFamily, setExportFontFamily] = useState(() => 
+    localStorage.getItem("miomanga_export_font") || '"Inter", "Helvetica Neue", Arial, sans-serif'
+  );
+  const [exportFontSizeScale, setExportFontSizeScale] = useState(() => {
+    const saved = localStorage.getItem("miomanga_export_font_size_scale");
+    return saved ? parseInt(saved, 10) : 100;
+  });
+  const [exportDrawBorders, setExportDrawBorders] = useState<boolean>(() => {
+    const saved = localStorage.getItem("miomanga_export_draw_borders");
+    return saved === "true"; // default is false (borderless)
+  });
+  const [exportBubbleShape, setExportBubbleShape] = useState<string>(() => 
+    localStorage.getItem("miomanga_export_bubble_shape") || "ellipse"
+  );
+  const [exportBubbleOffset, setExportBubbleOffset] = useState<number>(() => {
+    const saved = localStorage.getItem("miomanga_export_bubble_offset");
+    return saved ? parseInt(saved, 10) : 5; // default +5px to clear text perfectly without leakage
+  });
+  const [exportBorderWidth, setExportBorderWidth] = useState<number>(() => {
+    const saved = localStorage.getItem("miomanga_export_border_width");
+    return saved ? parseFloat(saved) : 2; // default 2px stroke to draw fresh outline
+  });
+  const [uploadedFonts, setUploadedFonts] = useState<string[]>(() => {
+    const saved = localStorage.getItem("miomanga_uploaded_fonts");
+    try {
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [editingFontSizeScaleCustom, setEditingFontSizeScaleCustom] = useState<number>(100);
+  const [editingOffsetCustom, setEditingOffsetCustom] = useState<number>(5);
+
+  // Translation AbortController Ref
+  const abortControllerRef = useRef<AbortController | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fontFileInputRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
+
+  const handleFontFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    
+    // derive clean font family name
+    const cleanName = file.name.substring(0, file.name.lastIndexOf('.')).replace(/[^a-zA-Z0-9\s-_]/g, "").trim() || "UploadedFont";
+    
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const result = event.target?.result as ArrayBuffer;
+        if (!result) return;
+        
+        const fontFace = new FontFace(cleanName, result);
+        const loadedFace = await fontFace.load();
+        (document as any).fonts.add(loadedFace);
+        
+        // Update custom uploaded fonts state
+        setUploadedFonts(prev => {
+          if (prev.includes(cleanName)) return prev;
+          return [...prev, cleanName];
+        });
+        
+        // Set uploaded font as current chosen export font family
+        setExportFontFamily(`"${cleanName}", sans-serif`);
+        alert(`Đã tải và nạp phông chữ thành công: "${cleanName}"`);
+      } catch (err) {
+        console.error("Lỗi nạp file font:", err);
+        alert("Có lỗi xảy ra khi nạp file phông chữ. Vui lòng chọn file .ttf, .otf hoặc .woff chuẩn.");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
 
   // Dynamic style constants for Light/Dark brutalist theme
   const cPageBg = isDarkMode ? "bg-[#171714] text-[#E4E3E0]" : "bg-[#F0F0ED] text-[#141414]";
@@ -238,6 +350,48 @@ export default function App() {
     localStorage.setItem("miomanga_current_project_id", currentProjectId);
   }, [currentProjectId]);
 
+  // Synchronize export image font family and scale settings
+  useEffect(() => {
+    localStorage.setItem("miomanga_export_font", exportFontFamily);
+  }, [exportFontFamily]);
+
+  useEffect(() => {
+    localStorage.setItem("miomanga_export_font_size_scale", exportFontSizeScale.toString());
+  }, [exportFontSizeScale]);
+
+  useEffect(() => {
+    localStorage.setItem("miomanga_export_draw_borders", exportDrawBorders.toString());
+  }, [exportDrawBorders]);
+
+  useEffect(() => {
+    localStorage.setItem("miomanga_export_bubble_shape", exportBubbleShape);
+  }, [exportBubbleShape]);
+
+  useEffect(() => {
+    localStorage.setItem("miomanga_export_bubble_offset", exportBubbleOffset.toString());
+  }, [exportBubbleOffset]);
+
+  useEffect(() => {
+    localStorage.setItem("miomanga_export_border_width", exportBorderWidth.toString());
+  }, [exportBorderWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("miomanga_uploaded_fonts", JSON.stringify(uploadedFonts));
+  }, [uploadedFonts]);
+
+  // Synchronize editing text when bubble selection changes
+  useEffect(() => {
+    if (selectedBubble) {
+      setEditingText(selectedBubble.translated_text);
+      setEditingFontSizeScaleCustom(selectedBubble.custom_font_size || 100);
+      setEditingOffsetCustom(selectedBubble.custom_offset !== undefined ? selectedBubble.custom_offset : exportBubbleOffset);
+    } else {
+      setEditingText("");
+      setEditingFontSizeScaleCustom(100);
+      setEditingOffsetCustom(5);
+    }
+  }, [selectedBubble]);
+
   // Load history
   useEffect(() => {
     const saved = localStorage.getItem("miomanga_history") || localStorage.getItem("mangalens_history");
@@ -272,9 +426,18 @@ export default function App() {
 
   const deleteHistoryItem = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const updated = history.filter(item => item.id !== id);
-    setHistory(updated);
-    localStorage.setItem("miomanga_history", JSON.stringify(updated));
+    const item = history.find(i => i.id === id);
+    const sceneLabel = item?.scene_context ? `"${item.scene_context}"` : "bản dịch này";
+    
+    triggerConfirm(
+      "XÓA BẢN DỊCH KHỎI LỊCH SỬ",
+      `Bạn có chắc chắn muốn xóa khỏi lịch sử bản dịch của ${sceneLabel}? Hành động này sẽ không thể khôi phục lại.`,
+      () => {
+        const updated = history.filter(item => item.id !== id);
+        setHistory(updated);
+        localStorage.setItem("miomanga_history", JSON.stringify(updated));
+      }
+    );
   };
 
   const clearHistory = () => {
@@ -329,6 +492,537 @@ export default function App() {
     );
   };
 
+  const [isExportingImage, setIsExportingImage] = useState(false);
+
+  const updateBubbleTranslation = (pageResultId: string, bubbleId: number, updatedText: string, customFontSize?: number, customOffset?: number) => {
+    // 1. Update results state
+    const updatedResults = results.map(res => {
+      if (res && res.id === pageResultId) {
+        return {
+          ...res,
+          bubbles: res.bubbles.map(b => b.bubble_id === bubbleId ? { ...b, translated_text: updatedText, custom_font_size: customFontSize, custom_offset: customOffset } : b)
+        };
+      }
+      return res;
+    });
+    setResults(updatedResults);
+
+    // 2. Update history state
+    const updatedHistory = history.map(item => {
+      if (item.id === pageResultId) {
+        return {
+          ...item,
+          bubbles: item.bubbles.map(b => b.bubble_id === bubbleId ? { ...b, translated_text: updatedText, custom_font_size: customFontSize, custom_offset: customOffset } : b)
+        };
+      }
+      return item;
+    });
+    setHistory(updatedHistory);
+    localStorage.setItem("miomanga_history", JSON.stringify(updatedHistory));
+
+    // 3. Update active selectedBubble if it is the one being edited
+    if (selectedBubble && selectedBubble.bubble_id === bubbleId) {
+      setSelectedBubble(prev => prev ? { ...prev, translated_text: updatedText, custom_font_size: customFontSize, custom_offset: customOffset } : null);
+    }
+  };
+
+  const exportTranslatedPageImage = (result: MangaResult, imageSrc: string, pageIndex: number) => {
+    if (isExportingImage) return;
+    setIsExportingImage(true);
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = imageSrc;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        setIsExportingImage(false);
+        return;
+      }
+
+      // 1. Draw base manga page
+      ctx.drawImage(img, 0, 0);
+
+      // 2. Clear old text and draw translated text inside bubbles
+      result.bubbles.forEach(bubble => {
+        const x = (bubble.bounding_box.x / 1000) * img.naturalWidth;
+        const y = (bubble.bounding_box.y / 1000) * img.naturalHeight;
+        const w = (bubble.bounding_box.width / 1000) * img.naturalWidth;
+        const h = (bubble.bounding_box.height / 1000) * img.naturalHeight;
+
+        // 2a. Draw the white masking background based on selected shape
+        ctx.fillStyle = "#FFFFFF";
+        ctx.beginPath();
+        const pad = bubble.custom_offset !== undefined ? bubble.custom_offset : exportBubbleOffset; // expand or shrink
+        
+        if (exportBubbleShape === "ellipse") {
+          const cx = x + w / 2;
+          const cy = y + h / 2;
+          const rx = Math.max(2, w / 2 + pad);
+          const ry = Math.max(2, h / 2 + pad);
+          ctx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+        } else if (exportBubbleShape === "roundrect") {
+          const nx = x - pad;
+          const ny = y - pad;
+          const nw = Math.max(1, w + 2 * pad);
+          const nh = Math.max(1, h + 2 * pad);
+          const r = Math.max(0, Math.min(nw, nh, 12));
+          const anyCtx = ctx as any;
+          if (anyCtx.roundRect) {
+            anyCtx.roundRect(nx, ny, nw, nh, r);
+          } else {
+            ctx.rect(nx, ny, nw, nh);
+          }
+        } else {
+          // simple rectangle
+          const nx = x - pad;
+          const ny = y - pad;
+          const nw = Math.max(1, w + 2 * pad);
+          const nh = Math.max(1, h + 2 * pad);
+          ctx.rect(nx, ny, nw, nh);
+        }
+        ctx.fill();
+
+        // 2b. Redraw bubble borders with custom width to prevent "eating" original manga borders
+        if (exportDrawBorders && exportBorderWidth > 0) {
+          ctx.strokeStyle = "#000000";
+          ctx.lineWidth = exportBorderWidth;
+          ctx.stroke();
+        }
+
+        // Draw translated text centered
+        ctx.fillStyle = "#000000";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        const textStr = (bubble.translated_text || "").trim();
+        
+        const drawWrappedText = (text: string, tx: number, ty: number, tw: number, th: number) => {
+          if (!text) return;
+          const words = text.split(/\s+/);
+          
+          // Use dynamic padding inside the bubble so text does not stick to physical borders
+          // Leave about 12% horizontal and 12% vertical padding
+          const paddingX = Math.max(8, Math.round(tw * 0.12));
+          const paddingY = Math.max(8, Math.round(th * 0.12));
+          const maxW = tw - paddingX * 2;
+          const maxH = th - paddingY * 2;
+          
+          // Guide starting bounds for font search - apply scale multiplier
+          const bubbleMultiplier = (bubble.custom_font_size || 100) / 100;
+          const scaleMultiplier = (exportFontSizeScale / 100) * bubbleMultiplier;
+          
+          // Minimum legible font relative to image height:
+          const minFontSize = Math.max(6, Math.round(img.naturalHeight * 0.007 * scaleMultiplier)); 
+          // Maximum realistic font scale relative to bubble dimension/image
+          const maxImageFont = Math.max(12, Math.round(img.naturalHeight * 0.024 * scaleMultiplier)); 
+          const maxBubbleFont = Math.min(Math.round(th * 0.45 * scaleMultiplier), Math.round(tw * 0.45 * scaleMultiplier));
+          const maxFontSize = Math.max(minFontSize + 4, Math.min(maxImageFont, maxBubbleFont));
+
+          let fontSizeToUse = maxFontSize;
+          let finalLines: string[] = [];
+          const lineSpacing = 1.25;
+
+          // Search downwards from max font size to min font size to find the first layout that fits
+          for (let fs = maxFontSize; fs >= minFontSize; fs--) {
+            ctx.font = `bold ${fs}px ${exportFontFamily}`;
+            let testLines: string[] = [];
+            let currentLine = "";
+            let wordTooWide = false;
+
+            for (let i = 0; i < words.length; i++) {
+              const word = words[i];
+              const testLine = currentLine ? `${currentLine} ${word}` : word;
+              const testWidth = ctx.measureText(testLine).width;
+
+              if (testWidth > maxW) {
+                // If current line already has content, wrap the current word to a new line
+                if (currentLine) {
+                  testLines.push(currentLine);
+                  currentLine = word;
+                  // If the single word itself is wider than maxW, keep track to reduce font
+                  if (ctx.measureText(word).width > maxW) {
+                    wordTooWide = true;
+                  }
+                } else {
+                  // Single word is already wider than maxW
+                  testLines.push(word);
+                  currentLine = "";
+                  wordTooWide = true;
+                }
+              } else {
+                currentLine = testLine;
+              }
+            }
+            if (currentLine) {
+              testLines.push(currentLine);
+            }
+
+            const totalHeight = testLines.length * (fs * lineSpacing);
+            
+            // If the layout fits within the safe bounds, we accept it is appropriate!
+            if (totalHeight <= maxH && !wordTooWide) {
+              fontSizeToUse = fs;
+              finalLines = testLines;
+              break;
+            }
+
+            // Fallback at the smallest allowed font size
+            if (fs === minFontSize) {
+              fontSizeToUse = fs;
+              finalLines = testLines;
+            }
+          }
+
+          if (finalLines.length === 0) {
+            finalLines = [text];
+          }
+
+          // Use the chosen font size and font family
+          ctx.font = `bold ${fontSizeToUse}px ${exportFontFamily}`;
+          const totalHeight = finalLines.length * (fontSizeToUse * lineSpacing);
+          
+          // Draw the text blocks centered inside the bounding box
+          // Center vertically: start rendering lines from (ty + th/2 - totalHeight/2) + half line height offset
+          const startY = ty + (th / 2) - (totalHeight / 2) + (fontSizeToUse * 0.6);
+          const drawX = tx + (tw / 2);
+
+          finalLines.forEach((line, index) => {
+            ctx.fillText(line, drawX, startY + index * (fontSizeToUse * lineSpacing));
+          });
+        };
+
+        drawWrappedText(textStr, x, y, w, h);
+      });
+
+      try {
+        const dataUrl = canvas.toDataURL("image/png");
+        const link = document.createElement("a");
+        link.download = `MioManga_Dich_Trang_${pageIndex}.png`;
+        link.href = dataUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (err) {
+        console.error("Canvas export blocked by cross-origin security:", err);
+        alert("Lỗi bảo mật CORS khi xuất ảnh từ máy chủ ảnh nguồn. Vui lòng tải lên ảnh trực tiếp từ thiết bị.");
+      } finally {
+        setIsExportingImage(false);
+      }
+    };
+
+    img.onerror = () => {
+      setIsExportingImage(false);
+      alert("Không tìm thấy dữ liệu ảnh gốc để tiến hành chèn lời.");
+    };
+  };
+
+  // Parser for importing and reading downloaded scripts (.txt)
+  const parseMioScript = (text: string): ParsedScript => {
+    const result: ParsedScript = {
+      title: "Kịch bản Chưa đặt tên",
+      pages: [],
+      rawText: text
+    };
+
+    try {
+      // Decode meta details
+      const projectMatch = text.match(/KỊCH BẢN TRUYỆN TRANH - DỰ ÁN:\s*(.*)/i) || text.match(/BẢN DỊCH TRANG TRUYỆN MANGA\s*\((.*?)\)/i);
+      if (projectMatch && projectMatch[1]) {
+        result.title = projectMatch[1].trim();
+      }
+
+      const descMatch = text.match(/Mô tả dự án:\s*(.*)/i);
+      if (descMatch && descMatch[1]) {
+        result.description = descMatch[1].trim();
+      }
+
+      const langMatch = text.match(/Ngôn ngữ đích:\s*(.*)/i);
+      if (langMatch && langMatch[1]) {
+        result.targetLang = langMatch[1].trim();
+      }
+
+      const hasMultiplePages = text.includes("📖 TRANG SỐ");
+
+      if (hasMultiplePages) {
+        // Multi-page format
+        const pageSections = text.split(/📖 TRANG SỐ/i);
+        pageSections.forEach((section, idx) => {
+          if (idx === 0) return; // Intro section
+
+          const lines = section.split("\n");
+          const pageNumMatch = lines[0].match(/^(\d+)/);
+          const pageNum = pageNumMatch ? "Trang " + pageNumMatch[1] : `Trang ${idx}`;
+
+          // Find scene context
+          let context = "";
+          const contextMatch = section.match(/🎬 Bối cảnh:\s*(.*)/i) || section.match(/bối cảnh phân cảnh:\s*(.*)/i);
+          if (contextMatch && contextMatch[1]) {
+            context = contextMatch[1].trim();
+          }
+
+          const bubbles: ParsedScriptBubble[] = [];
+          // Split by [TRANG or [Ô THOẠI
+          const bubbleSections = section.split(/\[(?:TRANG|Ô THOẠI|TRANG \d+ - Ô THOẠI)/i);
+          bubbleSections.forEach((bubbleSec, bIdx) => {
+            if (bIdx === 0) return;
+
+            const bLines = bubbleSec.split("\n");
+            const idMatch = bLines[0].match(/#(\d+)/) || bLines[0].match(/# (\d+)/) || bLines[0].match(/(\d+)/);
+            const bId = idMatch ? idMatch[1] : `${bIdx}`;
+
+            let original = "";
+            let translated = "";
+            let location = "";
+            let confidence = "";
+
+            const locMatch = bubbleSec.match(/Vị trí bong bóng:\s*(.*)/i) || bubbleSec.match(/VỊ TRÍ:\s*(.*)/i);
+            if (locMatch && locMatch[1]) {
+              location = locMatch[1].trim();
+            }
+
+            const confMatch = bubbleSec.match(/Điểm chính xác:\s*(.*)/i) || bubbleSec.match(/CHÍNH XÁC:\s*(.*)/i);
+            if (confMatch && confMatch[1]) {
+              confidence = confMatch[1].trim();
+            }
+
+            // Slice out Original text between Gốc and Dịch tags
+            const origMatch = bubbleSec.match(/(?:Gốc JPN\/ENG:|GỐC \(JPN\/ENG\):)\s*\n([\s\S]*?)(?=(?:👉 Bản dịch|👉 DỊCH|⭐|----------------|$))/i);
+            if (origMatch && origMatch[1]) {
+              original = origMatch[1].trim();
+            }
+
+            // Slice out Translated text
+            const transMatch = bubbleSec.match(/(?:Bản dịch \([^)]+\):|DỊCH \([^)]+\):)\s*\n([\s\S]*?)(?=(?:⭐|----------------|$))/i);
+            if (transMatch && transMatch[1]) {
+              translated = transMatch[1].trim();
+            }
+
+            bubbles.push({
+              id: bId,
+              page: pageNum,
+              original,
+              translated,
+              location,
+              confidence
+            });
+          });
+
+          result.pages.push({
+            pageNumber: pageNum,
+            context,
+            bubbles
+          });
+        });
+      } else {
+        // Single page format
+        let context = "";
+        const contextMatch = text.match(/🎬 Bối cảnh phân cảnh:\s*(.*)/i) || text.match(/🎬 Bối cảnh:\s*(.*)/i);
+        if (contextMatch && contextMatch[1]) {
+          context = contextMatch[1].trim();
+        }
+
+        const bubbles: ParsedScriptBubble[] = [];
+        const bubbleSections = text.split(/\[Ô THOẠI/i);
+        bubbleSections.forEach((bubbleSec, bIdx) => {
+          if (bIdx === 0) return;
+
+          const bLines = bubbleSec.split("\n");
+          const idMatch = bLines[0].match(/#(\d+)/) || bLines[0].match(/# (\d+)/) || bLines[0].match(/(\d+)/);
+          const bId = idMatch ? idMatch[1] : `${bIdx}`;
+
+          let original = "";
+          let translated = "";
+          let location = "";
+          let confidence = "";
+
+          const locMatch = bubbleSec.match(/VỊ TRÍ:\s*(.*)/i) || bubbleSec.match(/Vị trí bong bóng:\s*(.*)/i);
+          if (locMatch && locMatch[1]) {
+            location = locMatch[1].trim();
+          }
+
+          const confMatch = bubbleSec.match(/CHÍNH XÁC:\s*(.*)/i) || bubbleSec.match(/Điểm chính xác:\s*(.*)/i);
+          if (confMatch && confMatch[1]) {
+            confidence = confMatch[1].trim();
+          }
+
+          const origMatch = bubbleSec.match(/GỐC \(JPN\/ENG\):\s*\n([\s\S]*?)(?=(?:👉 DỊCH|----------------|$))/i);
+          if (origMatch && origMatch[1]) {
+            original = origMatch[1].trim();
+          }
+
+          const transMatch = bubbleSec.match(/DỊCH \([^)]+\):\s*\n([\s\S]*?)(?=(?:⭐|----------------|$))/i);
+          if (transMatch && transMatch[1]) {
+            translated = transMatch[1].trim();
+          }
+
+          bubbles.push({
+            id: bId,
+            page: "Trang 1",
+            original,
+            translated,
+            location,
+            confidence
+          });
+        });
+
+        result.pages.push({
+          pageNumber: "Trang 1",
+          context,
+          bubbles
+        });
+      }
+
+      // Final Fail-safe Fallback parser
+      if (result.pages.length === 0 || result.pages.every(p => p.bubbles.length === 0)) {
+        const textLines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+        const bubbles: ParsedScriptBubble[] = [];
+        
+        textLines.forEach((line, idx) => {
+          if (line.includes(":") && !line.startsWith("==") && !line.startsWith("--") && !line.startsWith("⏱") && !line.startsWith("🎯")) {
+            const parts = line.split(":");
+            bubbles.push({
+              id: `${idx + 1}`,
+              page: "Xem nhanh",
+              original: parts[0].trim(),
+              translated: parts.slice(1).join(":").trim()
+            });
+          }
+        });
+
+        result.pages = [{
+          pageNumber: "Kịch bản thô",
+          context: "Định dạng tự do hoặc thô tải từ tệp tin bên ngoài",
+          bubbles: bubbles.length > 0 ? bubbles : [{
+            id: "1",
+            page: "Kịch bản thô",
+            original: "Tệp tin thô:",
+            translated: text
+          }]
+        }];
+      }
+    } catch (err) {
+      console.error("Lỗi khi giải trình kịch bản:", err);
+    }
+
+    return result;
+  };
+
+  // Helper functions for downloading text scripts
+  const downloadAsTxt = (filename: string, content: string) => {
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportSinglePageTxt = (result: MangaResult, indexLabel?: number | string) => {
+    const languageLabel = targetLanguage;
+    let text = `========================================================\n`;
+    text += `   BẢN DỊCH TRANG TRUYỆN MANGA (MioManga Script)\n`;
+    text += `========================================================\n\n`;
+    text += `⏱ Thời gian trích xuất: ${new Date(result.timestamp).toLocaleString("vi-VN")}\n`;
+    text += `🎯 Ngôn ngữ đích: ${languageLabel}\n`;
+    if (indexLabel !== undefined) {
+      text += `📄 Phân trang: Trang ${indexLabel}\n`;
+    }
+    text += `🎬 Bối cảnh phân cảnh: ${result.scene_context || "Không có bối cảnh chi tiết."}\n`;
+    text += `💬 Tổng số ô thoại: ${result.total_bubbles} ô\n\n`;
+    text += `--------------------------------------------------------\n`;
+    text += `DANH SÁCH THOẠI CHI TIẾT (CHIA THOẠI ĐÀNG HOÀNG):\n`;
+    text += `--------------------------------------------------------\n\n`;
+
+    result.bubbles.forEach((bubble) => {
+      text += `[Ô THOẠI #${bubble.bubble_id}]\n`;
+      text += `🔹 VỊ TRÍ: X: ${Math.round(bubble.bounding_box.x)}%, Y: ${Math.round(bubble.bounding_box.y)}%, Rộng: ${Math.round(bubble.bounding_box.width)}%, Cao: ${Math.round(bubble.bounding_box.height)}%\n`;
+      text += `🔹 GỐC (JPN/ENG):\n${bubble.original_text}\n\n`;
+      text += `👉 DỊCH (${languageLabel}):\n${bubble.translated_text}\n`;
+      text += `⭐ CHÍNH XÁC: ${Math.round(bubble.confidence_score * 100)}%\n`;
+      text += `--------------------------------------------------------\n\n`;
+    });
+
+    text += `=== HẾT TRANG ===\n`;
+
+    const cleanSceneContext = (result.scene_context || "Dich_MioManga")
+      .replace(/[^a-zA-Z0-9_ÁÀẢÃẠÂẤẦẨẪẬĂẮẰẲẴẶÉÈẺẼẸÊẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÚÙỦŨỤƯỨỪỬỮỰÝỲỶỸÝỲỶỸỴđĐ\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "_")
+      .slice(0, 30);
+
+    const filename = `MioManga_Script_${cleanSceneContext || "Page"}_${result.id.slice(0, 5)}.txt`;
+    downloadAsTxt(filename, text);
+  };
+
+  const exportProjectTxt = (projectId: string) => {
+    const project = projects.find(p => p.id === projectId) || (projectId === "default" ? { name: "Dự án Mặc định", description: "Lưu trữ chung" } : null);
+    if (!project) return;
+
+    // Filter history items belonging to this project, sorted chronologically (oldest first)
+    const projectItems = history
+      .filter(item => (item.projectId || "default") === projectId)
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    if (projectItems.length === 0) {
+      triggerConfirm(
+        "DỰ ÁN RỖNG",
+        `Dự án "${project.name}" hiện chưa có bản dịch nào được lưu trữ trong lịch sử. Vui lòng dịch tối thiểu một trang truyện thuộc dự án này để tiến hành tải về.`,
+        () => {}
+      );
+      return;
+    }
+
+    const languageLabel = targetLanguage;
+    let text = `========================================================\n`;
+    text += `   KỊCH BẢN TRUYỆN TRANH - DỰ ÁN: ${project.name.toUpperCase()}\n`;
+    text += `========================================================\n`;
+    if ("description" in project && project.description) {
+      text += `📝 Mô tả dự án: ${project.description}\n`;
+    }
+    text += `⏱ Thời gian tạo kịch bản: ${new Date().toLocaleString("vi-VN")}\n`;
+    text += `📄 Tổng số trang đã dịch: ${projectItems.length} trang\n`;
+    text += `🎯 Ngôn ngữ đích: ${languageLabel}\n`;
+    text += `========================================================\n\n`;
+
+    projectItems.forEach((item, pageIndex) => {
+      text += `========================================================\n`;
+      text += `📖 TRANG SỐ ${pageIndex + 1} (Thời gian dịch: ${new Date(item.timestamp).toLocaleString("vi-VN")})\n`;
+      text += `🎬 Bối cảnh: ${item.scene_context || "Không rõ."}\n`;
+      text += `💬 Số lượng ô thoại: ${item.total_bubbles} ô\n`;
+      text += `========================================================\n\n`;
+
+      item.bubbles.forEach((bubble) => {
+        text += `[TRANG ${pageIndex + 1} - Ô THOẠI #${bubble.bubble_id}]\n`;
+        text += `🔹 Vị trí bong bóng: X: ${Math.round(bubble.bounding_box.x)}%, Y: ${Math.round(bubble.bounding_box.y)}%, W: ${Math.round(bubble.bounding_box.width)}%, H: ${Math.round(bubble.bounding_box.height)}%\n`;
+        text += `🔹 Gốc JPN/ENG:\n${bubble.original_text}\n\n`;
+        text += `👉 Bản dịch (${languageLabel}):\n${bubble.translated_text}\n`;
+        text += `⭐ Điểm chính xác: ${Math.round(bubble.confidence_score * 100)}%\n`;
+        text += `--------------------------------------------------------\n\n`;
+      });
+
+      text += `\n`;
+    });
+
+    text += `========================================================\n`;
+    text += `             HOÀN THÀNH KỊCH BẢN DỰ ÁN                  \n`;
+    text += `========================================================\n`;
+
+    const cleanProjName = project.name
+      .replace(/[^a-zA-Z0-9_ÁÀẢÃẠÂẤẦẨẪẬĂẮẰẲẴẶÉÈẺẼẸÊẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÚÙỦŨỤƯỨỪỬỮỰÝỲỶỸÝỲỶỸỴđĐ\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "_")
+      .slice(0, 30);
+
+    const filename = `MioManga_KichBanDuAn_${cleanProjName || "Project"}.txt`;
+    downloadAsTxt(filename, text);
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     setCopyStatus("Đã sao chép!");
@@ -371,6 +1065,17 @@ export default function App() {
     setSelectedBubble(null);
   };
 
+  const cancelProcessing = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsProcessing(false);
+    setIsProcessingAll(false);
+    setProgress(0);
+    setProcessedCount(0);
+  };
+
   const processImage = async (index: number = activeIndex) => {
     const targetImage = images[index];
     if (!targetImage) return null;
@@ -378,10 +1083,16 @@ export default function App() {
     // If not in "process all" mode, we set the global isProcessing
     if (!isProcessingAll) setIsProcessing(true);
     
+    // Ensure we have an active AbortController
+    if (!abortControllerRef.current || abortControllerRef.current.signal.aborted) {
+      abortControllerRef.current = new AbortController();
+    }
+    
     try {
       const response = await fetch("/api/translate-manga", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: abortControllerRef.current.signal,
         body: JSON.stringify({ 
           image: targetImage, 
           targetLanguage, 
@@ -412,7 +1123,11 @@ export default function App() {
       };
       
       return newResult;
-    } catch (error) {
+    } catch (error: any) {
+      if (error.name === "AbortError") {
+        console.log("Tiến trình dịch thuật đã bị người dùng hủy.");
+        return null;
+      }
       console.error(`Xử lý trang ${index + 1} thất bại:`, error);
       alert(`Không thể kết nối với máy chủ dịch thuật cho trang ${index + 1}.`);
       return null;
@@ -422,6 +1137,7 @@ export default function App() {
   };
 
   const handleSingleProcess = async () => {
+    abortControllerRef.current = new AbortController();
     const result = await processImage();
     if (result) {
       const newResults = [...results];
@@ -438,24 +1154,27 @@ export default function App() {
     setIsProcessing(true);
     setProcessedCount(0);
     
+    // Create new abort controller for the batch sequence
+    abortControllerRef.current = new AbortController();
+    
     const newResults = [...results];
     
     for (let i = 0; i < images.length; i++) {
-      // Only process if not already processed OR if user wants to refresh (we'll do all for "Translate All")
-      // But let's skip already processed ones if we want to be efficient? 
-      // Most users expect "Translate All" to fill in the blanks or redo everything.
-      // Let's redo everything for simplicity/consistency as standard "Batch" behavior.
+      if (abortControllerRef.current?.signal.aborted) {
+        break;
+      }
       
       setActiveIndex(i); // Move focus as we process
       const result = await processImage(i);
+      
+      if (abortControllerRef.current?.signal.aborted) {
+        break;
+      }
       
       if (result) {
         newResults[i] = result;
         setResults([...newResults]); // Update UI incrementally
         saveToHistory(result);
-      } else {
-        // If one fails and it's a quota error, we might want to stop
-        // For now, let's just continue
       }
       setProcessedCount(i + 1);
     }
@@ -475,6 +1194,230 @@ export default function App() {
   return (
     <div className={`min-h-screen ${cPageBg} ${cSelection} font-sans flex flex-col h-screen overflow-hidden`}>
       
+      {/* Export Settings Overlay */}
+      <AnimatePresence>
+        {exportSettingsOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setExportSettingsOpen(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200]"
+            />
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }} 
+              animate={{ scale: 1, opacity: 1 }} 
+              exit={{ scale: 0.95, opacity: 0 }}
+              className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-sm ${cCardBg} border-4 ${cBorder} p-5 z-[201] shadow-2xl rounded-sm`}
+            >
+              <div className="flex justify-between items-center pb-3 border-b-2 border-dashed border-gray-500/30">
+                <h3 className="font-black text-xs uppercase tracking-wide flex items-center gap-2 text-emerald-600">
+                  <ImageIcon size={16} /> Cấu hình tải ảnh dịch
+                </h3>
+                <button 
+                  onClick={() => setExportSettingsOpen(false)} 
+                  className="hover:rotate-90 transition-transform p-1"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="py-4 space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                {/* Font Choice */}
+                <div className="space-y-1 bg-gray-500/5 p-2 rounded-sm border border-gray-500/10">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-black uppercase opacity-60">Phông chữ (Font Family):</label>
+                    <button
+                      type="button"
+                      onClick={() => fontFileInputRef.current?.click()}
+                      className="text-[9px] font-black bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded cursor-pointer transition-all active:scale-95 uppercase flex items-center gap-1"
+                    >
+                      <Upload size={10} /> Chọn tệp font
+                    </button>
+                    <input 
+                      type="file"
+                      ref={fontFileInputRef}
+                      onChange={handleFontFileUpload}
+                      accept=".ttf,.otf,.woff,.woff2"
+                      className="hidden"
+                    />
+                  </div>
+                  
+                  <select 
+                    value={exportFontFamily}
+                    onChange={(e) => setExportFontFamily(e.target.value)}
+                    className={`w-full p-2 text-xs font-black border-2 ${cBorder} ${cInputBg} rounded-sm cursor-pointer outline-none focus:ring-1 focus:ring-emerald-500`}
+                  >
+                    <option value='"Inter", "Helvetica Neue", Arial, sans-serif'>Inter (Hiện đại, tối giản)</option>
+                    <option value='"Comic Neue", cursive, sans-serif'>Comic Neue (Chuẩn Manga / Comic)</option>
+                    <option value='"JetBrains Mono", monospace'>JetBrains Mono (Tech / Mono)</option>
+                    <option value='Impact, Charcoal, sans-serif'>Impact (Mạnh mẽ, dày dặn)</option>
+                    <option value='Georgia, serif'>Georgia (Sang trọng, có chân)</option>
+                    <option value='"Times New Roman", serif'>Times New Roman (Cổ điển)</option>
+                    {uploadedFonts.map((font) => (
+                      <option key={font} value={`"${font}", sans-serif`}>
+                        ✨ [Font Nạp] {font}
+                      </option>
+                    ))}
+                  </select>
+                  
+                  {/* Free-form Custom Font Entry */}
+                  <div className="pt-1">
+                    <span className="text-[9px] font-bold opacity-50 block">Hoặc nhập tên font hệ thống:</span>
+                    <input 
+                      type="text"
+                      value={exportFontFamily}
+                      onChange={(e) => setExportFontFamily(e.target.value)}
+                      className={`w-full mt-1 p-2 text-xs border-2 ${cBorder} ${cInputBg} rounded-sm outline-none focus:ring-1 focus:ring-emerald-500`}
+                      placeholder="vd: Arial, Comic Sans MS..."
+                    />
+                  </div>
+                </div>
+
+                {/* Mask Shape Configuration */}
+                <div className="space-y-1.5 bg-gray-500/5 p-2 rounded-sm border border-gray-500/10">
+                  <label className="text-[10px] font-black uppercase opacity-60 block">Kiểu che chữ (Bubble Shape):</label>
+                  <select
+                    value={exportBubbleShape}
+                    onChange={(e) => setExportBubbleShape(e.target.value)}
+                    className={`w-full p-2 text-xs font-black border-2 ${cBorder} ${cInputBg} rounded-sm cursor-pointer outline-none focus:ring-1 focus:ring-emerald-500`}
+                  >
+                     <option value="ellipse">Hình bầu dục (Tròn / Ellipse - Tốt nhất cho Manga)</option>
+                     <option value="roundrect">Hình chữ nhật bo tròn (Rounded Rectangle)</option>
+                     <option value="rect">Hình chữ nhật vuông (Rectangle)</option>
+                  </select>
+                </div>
+
+                {/* Margin Offset Configuration */}
+                <div className="space-y-1 bg-gray-500/5 p-2 rounded-sm border border-gray-500/10">
+                  <div className="flex justify-between text-[10px] font-black uppercase">
+                    <span className="opacity-60 font-black">Xê dịch / Bọc viền (Padding):</span>
+                    <span className={exportBubbleOffset >= 0 ? "text-emerald-500 font-bold" : "text-rose-500 font-bold"}>
+                      {exportBubbleOffset > 0 ? `+${exportBubbleOffset}` : exportBubbleOffset}px
+                    </span>
+                  </div>
+                  <input 
+                    type="range"
+                    min="-15"
+                    max="25"
+                    step="1"
+                    value={exportBubbleOffset}
+                    onChange={(e) => setExportBubbleOffset(parseInt(e.target.value, 10))}
+                    className="w-full h-1.5 bg-gray-300 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+                  />
+                  <div className="flex justify-between text-[8px] font-mono font-bold opacity-50">
+                    <span>-15px (Bóp nhỏ)</span>
+                    <span>0px (Chuẩn)</span>
+                    <span>25px (Phủ rộng)</span>
+                  </div>
+                  <span className="text-[8px] italic opacity-40 block leading-tight">
+                    * Tăng (+) để xoá sạch bóng chữ cũ còn thừa; giảm (-) để chừa lại viền vẽ tay của truyện.
+                  </span>
+                </div>
+
+                {/* Draw Borders / Stroke Toggle */}
+                <div className="space-y-2 bg-gray-500/5 p-2 rounded-sm border border-gray-500/10">
+                  <div className="flex items-center gap-2">
+                    <input 
+                      type="checkbox"
+                      id="exportDrawBorders"
+                      checked={exportDrawBorders}
+                      onChange={(e) => setExportDrawBorders(e.target.checked)}
+                      className="w-4.5 h-4.5 border-2 rounded-sm cursor-pointer accent-emerald-600 focus:ring-0 outline-none"
+                    />
+                    <label htmlFor="exportDrawBorders" className="text-[10px] font-black uppercase cursor-pointer select-none opacity-80">
+                      Tự động vẽ viền mới (Comic Borders)
+                    </label>
+                  </div>
+
+                  {exportDrawBorders && (
+                    <div className="pl-6 space-y-1">
+                      <div className="flex justify-between text-[9px] font-black uppercase opacity-80">
+                        <span>Độ dày nét viền:</span>
+                        <span className="text-emerald-500 font-bold">{exportBorderWidth}px</span>
+                      </div>
+                      <input 
+                        type="range"
+                        min="0.5"
+                        max="6"
+                        step="0.5"
+                        value={exportBorderWidth}
+                        onChange={(e) => setExportBorderWidth(parseFloat(e.target.value))}
+                        className="w-full h-1 bg-gray-300 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+                      />
+                      <span className="text-[8px] italic opacity-40 block">
+                        * Vẽ nét viền mực bao quanh phần che phủ để tái tạo lại viền bong bóng sắc nét.
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Font Size Modifier */}
+                <div className="space-y-1 bg-gray-500/5 p-2 rounded-sm border border-gray-500/10">
+                  <div className="flex justify-between text-[10px] font-black uppercase">
+                    <span className="opacity-60 font-black">Cỡ chữ tổng thể:</span>
+                    <span className="text-emerald-500 font-bold">{exportFontSizeScale}%</span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <input 
+                      type="range"
+                      min="50"
+                      max="200"
+                      step="5"
+                      value={exportFontSizeScale}
+                      onChange={(e) => setExportFontSizeScale(parseInt(e.target.value, 10))}
+                      className="flex-1 h-1.5 bg-gray-300 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+                    />
+                  </div>
+                  <div className="flex justify-between text-[8px] font-mono font-bold opacity-50">
+                    <span>50% (Nhỏ)</span>
+                    <span>100% (Chuẩn)</span>
+                    <span>200% (Lớn)</span>
+                  </div>
+                </div>
+
+                {/* Scale presets */}
+                <div className="flex gap-1 overflow-x-auto pb-1">
+                  {[75, 100, 125, 150].map((preset) => (
+                    <button
+                      key={preset}
+                      onClick={() => setExportFontSizeScale(preset)}
+                      className={`text-[9px] font-black px-2 py-1 border rounded-sm transition-all uppercase shrink-0 ${
+                        exportFontSizeScale === preset 
+                          ? "bg-emerald-600 text-white border-emerald-600" 
+                          : `${isDarkMode ? "bg-[#282824]/40 hover:bg-[#282824]" : "bg-gray-100 hover:bg-gray-200"} border-gray-500/20`
+                      }`}
+                    >
+                      {preset}% {preset === 100 ? "(Mặc định)" : ""}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-3 border-t-2 border-dashed border-gray-500/30">
+                <button
+                  onClick={() => setExportSettingsOpen(false)}
+                  className={`flex-1 py-2 text-[10px] font-black uppercase border-2 ${cBorder} text-center hover:bg-red-500 hover:text-white transition-all active:scale-95`}
+                >
+                  Đóng
+                </button>
+                <button
+                  onClick={() => {
+                    setExportSettingsOpen(false);
+                    if (currentResult && currentImage) {
+                      exportTranslatedPageImage(currentResult, currentImage, activeIndex + 1);
+                    }
+                  }}
+                  className="flex-1 py-2 text-[10px] bg-emerald-600 text-white font-black uppercase text-center hover:bg-emerald-500 transition-all active:scale-95 shadow-md flex items-center justify-center gap-1"
+                >
+                  <Download size={11} /> Tải ảnh về
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
       {/* Settings Overlay */}
       <AnimatePresence>
         {isSettingsOpen && (
@@ -576,23 +1519,47 @@ export default function App() {
                         </div>
                       </div>
                       
-                      {currentProjectId !== "default" && (
-                        <div className={`flex items-start justify-between bg-black/5 dark:bg-white/5 p-2 border ${cBorder} rounded-sm text-[10px] leading-tight`}>
-                          <div className="flex-1 min-w-0 pr-2">
-                            <span className="font-bold text-[8px] opacity-40 uppercase block">Đang hoạt động:</span>
-                            <span className="font-black text-xs truncate block">{projects.find(p => p.id === currentProjectId)?.name}</span>
-                            {projects.find(p => p.id === currentProjectId)?.description && (
-                              <span className="opacity-65 text-[9px] italic mt-0.5 block truncate">
-                                {projects.find(p => p.id === currentProjectId)?.description}
-                              </span>
-                            )}
+                      {currentProjectId !== "default" ? (
+                        <div className={`flex flex-col gap-2 bg-black/5 dark:bg-white/5 p-2.5 border ${cBorder} rounded-sm text-[10px] leading-tight`}>
+                          <div className="flex items-start justify-between animate-fadeIn">
+                            <div className="flex-1 min-w-0 pr-2">
+                              <span className="font-bold text-[8px] opacity-40 uppercase block">Đang hoạt động:</span>
+                              <span className="font-black text-xs truncate block">{projects.find(p => p.id === currentProjectId)?.name}</span>
+                              {projects.find(p => p.id === currentProjectId)?.description && (
+                                <span className="opacity-65 text-[9px] italic mt-0.5 block truncate">
+                                  {projects.find(p => p.id === currentProjectId)?.description}
+                                </span>
+                              )}
+                            </div>
+                            <button 
+                              onClick={(e) => deleteProject(currentProjectId, e)}
+                              className="bg-red-500/15 text-red-500 hover:bg-red-500 hover:text-white px-2 py-1 rounded-sm border border-red-500/20 active:scale-95 transition-all text-[9px] font-black uppercase shrink-0"
+                              title="Xóa dự án này"
+                            >
+                              Xóa
+                            </button>
                           </div>
-                          <button 
-                            onClick={(e) => deleteProject(currentProjectId, e)}
-                            className="bg-red-500/15 text-red-500 hover:bg-red-500 hover:text-white p-1 rounded-sm border border-red-500/20 active:scale-95 transition-all text-[9px] font-black uppercase shrink-0"
-                            title="Xóa dự án này"
+                          <button
+                            onClick={() => exportProjectTxt(currentProjectId)}
+                            className="w-full mt-1 py-1.5 px-3 bg-blue-600 hover:bg-blue-500 text-white border border-blue-500/10 rounded-sm font-black text-[9.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all active:scale-95 shadow-sm"
                           >
-                            Xóa dự án
+                            <Download size={11} /> Tải kịch bản dự án này
+                          </button>
+                        </div>
+                      ) : (
+                        <div className={`flex flex-col gap-2 bg-black/5 dark:bg-white/5 p-2.5 border ${cBorder} rounded-sm text-[10px] leading-tight`}>
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1 min-w-0 pr-2">
+                              <span className="font-bold text-[8px] opacity-40 uppercase block">Đang hoạt động:</span>
+                              <span className="font-black text-xs block text-blue-500">Dự án Mặc định</span>
+                              <span className="opacity-65 text-[9px] italic mt-0.5 block">Nơi lưu trữ chung khi chưa phân loại</span>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => exportProjectTxt("default")}
+                            className="w-full mt-1 py-1.5 px-3 bg-blue-600 hover:bg-blue-500 text-white border border-blue-500/10 rounded-sm font-black text-[9.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all active:scale-95 shadow-sm"
+                          >
+                            <Download size={11} /> Tải kịch bản dự án mặc định
                           </button>
                         </div>
                       )}
@@ -703,6 +1670,30 @@ export default function App() {
                     placeholder="Ví dụ: Nhân vật là kiếm sĩ, văn phong cổ trang..."
                     className={`w-full h-32 p-3 text-xs outline-none focus:bg-blue-50/10 transition-colors resize-none ${cBorder2} ${cInputBg}`}
                   />
+                  <div className="space-y-2">
+                    <label className={`flex items-center justify-center gap-2 border-2 border-dashed ${cBorder} rounded-sm p-2.5 hover:bg-blue-500/5 cursor-pointer transition-all active:scale-98 text-blue-500 hover:text-blue-600`}>
+                      <Upload size={14} />
+                      <span className="text-[10px] font-black uppercase tracking-wider">Nạp từ file Prompt (.txt, .md)</span>
+                      <input 
+                        type="file" 
+                        accept=".txt,.md" 
+                        className="hidden" 
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const reader = new FileReader();
+                            reader.onload = (evt) => {
+                              const value = evt.target?.result;
+                              if (typeof value === "string") {
+                                setUserPrompt(value);
+                              }
+                            };
+                            reader.readAsText(file);
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -742,23 +1733,64 @@ export default function App() {
               {/* Filter by project */}
               <div className="px-4 pt-4 shrink-0">
                 <label className="text-[9px] font-black uppercase opacity-60 block mb-1">🔍 Bộ lọc Dự án Manga</label>
-                <div className={`relative ${cBorder2} ${cInputBg}`}>
-                  <select 
-                    value={filterProjectId}
-                    onChange={(e) => setFilterProjectId(e.target.value)}
-                    className="w-full p-2 text-xs font-bold bg-transparent outline-none appearance-none cursor-pointer pr-8 focus:ring-1 focus:ring-blue-500"
-                  >
-                    <option value="all" className={isDarkMode ? "bg-[#22221F]" : ""}>📚 Tất cả Dự án ({history.length})</option>
-                    {projects.map(proj => {
-                      const count = history.filter(item => (item.projectId || "default") === proj.id).length;
-                      return (
-                        <option key={proj.id} value={proj.id} className={isDarkMode ? "bg-[#22221F]" : ""}>
-                          📁 {proj.name} ({count})
-                        </option>
-                      );
-                    })}
-                  </select>
-                  <ChevronRight size={14} className="absolute right-3 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+                <div className="flex gap-2">
+                  <div className={`relative flex-1 ${cBorder2} ${cInputBg}`}>
+                    <select 
+                      value={filterProjectId}
+                      onChange={(e) => setFilterProjectId(e.target.value)}
+                      className="w-full p-2.5 text-xs font-bold bg-transparent outline-none appearance-none cursor-pointer pr-8 focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="all" className={isDarkMode ? "bg-[#22221F]" : ""}>📚 Tất cả Dự án ({history.length})</option>
+                      {projects.map(proj => {
+                        const count = history.filter(item => (item.projectId || "default") === proj.id).length;
+                        return (
+                          <option key={proj.id} value={proj.id} className={isDarkMode ? "bg-[#22221F]" : ""}>
+                            📁 {proj.name} ({count})
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <ChevronRight size={14} className="absolute right-3 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+                  </div>
+                  {filterProjectId !== "all" ? (
+                    <button
+                      onClick={() => exportProjectTxt(filterProjectId)}
+                      className={`px-3 border-2 ${cBorder} rounded-sm ${cBtnHover} text-blue-500 hover:bg-blue-600 hover:text-white transition-all flex items-center justify-center`}
+                      title="Tải kịch bản của dự án đang chọn (.txt)"
+                    >
+                      <Download size={14} />
+                    </button>
+                  ) : history.length > 0 ? (
+                    <button
+                      onClick={() => {
+                        let allContent = `========================================================\n`;
+                        allContent += `   TỔNG HỢP TOÀN BỘ KỊCH BẢN DỊCH TRONG LỊCH SỬ\n`;
+                        allContent += `========================================================\n`;
+                        allContent += `⏱ Xuất bởi: MioManga | Thời gian: ${new Date().toLocaleString("vi-VN")}\n`;
+                        allContent += `🎯 Ngôn ngữ: ${targetLanguage}\n`;
+                        allContent += `📄 Quy mô: ${history.length} trang truyện\n`;
+                        allContent += `========================================================\n\n`;
+
+                        history.forEach((item, index) => {
+                          const itemProj = projects.find(p => p.id === (item.projectId || "default")) || { name: "Mặc định" };
+                          allContent += `--------------------------------------------------------\n`;
+                          allContent += `Trang ${index + 1} | Dự án: ${itemProj.name} | Bối cảnh: ${item.scene_context || "Không rõ."}\n`;
+                          allContent += `--------------------------------------------------------\n\n`;
+                          item.bubbles.forEach(b => {
+                            allContent += `[TRANG ${index + 1} - Ô THOẠI #${b.bubble_id}]\n`;
+                            allContent += `Gốc: ${b.original_text}\n`;
+                            allContent += `Dịch: ${b.translated_text}\n\n`;
+                          });
+                        });
+                        
+                        downloadAsTxt("MioManga_TongHopLichSuScripts.txt", allContent);
+                      }}
+                      className={`px-3 border-2 ${cBorder} rounded-sm ${cBtnHover} text-blue-500 hover:bg-blue-600 hover:text-white transition-all flex items-center justify-center`}
+                      title="Tải toàn bộ kịch bản lịch sử (.txt)"
+                    >
+                      <Download size={14} />
+                    </button>
+                  ) : null}
                 </div>
               </div>
 
@@ -783,9 +1815,10 @@ export default function App() {
                         </span>
                         <button 
                           onClick={(e) => deleteHistoryItem(item.id, e)}
-                          className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:scale-110"
+                          className="text-red-500 opacity-70 md:opacity-0 md:group-hover:opacity-100 transition-all p-1 hover:text-red-600 hover:scale-110 active:scale-95 shrink-0"
+                          title="Xóa trang này khỏi lịch sử"
                         >
-                          <Trash2 size={13} />
+                          <Trash2 size={14} />
                         </button>
                       </div>
                       
@@ -859,6 +1892,35 @@ export default function App() {
           >
             <Clock size={18} />
           </button>
+
+          <label 
+            className={`p-2 border-2 ${cBorder} ${cBtnHover} cursor-pointer transition-all flex items-center justify-center`}
+            title="Nhập kịch bản (.txt) đã tải"
+          >
+            <BookOpen size={18} className="text-blue-500" />
+            <input 
+              type="file" 
+              accept=".txt" 
+              className="hidden" 
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = (evt) => {
+                    const content = evt.target?.result;
+                    if (typeof content === "string") {
+                      const parsed = parseMioScript(content);
+                      setScriptDialog({ isOpen: true, parsed });
+                      setScriptViewPageIdx(0);
+                    }
+                  };
+                  reader.readAsText(file);
+                }
+                // Reset input value to allow uploading the same file again
+                e.target.value = "";
+              }}
+            />
+          </label>
 
           <button 
             onClick={() => fileInputRef.current?.click()}
@@ -941,19 +2003,80 @@ export default function App() {
                       <span className="text-[9px] font-black uppercase opacity-40">Nguyên văn:</span>
                       <p className={`text-[11px] p-2 italic leading-relaxed ${isDarkMode ? "bg-white/5" : "bg-black/5"}`}>{selectedBubble.original_text}</p>
                     </div>
-                    <div className="space-y-1">
-                      <span className="text-[9px] font-black uppercase text-blue-500">Bản dịch:</span>
-                      <div className="relative">
-                        <p className="text-xs font-black p-2 border-2 border-dashed border-blue-500 leading-tight pr-10">{selectedBubble.translated_text}</p>
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[9px] font-black uppercase text-blue-500">Bản dịch (Sửa trực tiếp):</span>
                         <button 
-                          onClick={() => copyToClipboard(selectedBubble.translated_text)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 hover:bg-blue-50/10 transition-colors text-blue-500"
+                          onClick={() => copyToClipboard(editingText)}
+                          className="text-[9.5px] font-black text-blue-500 hover:underline flex items-center gap-1 active:scale-95 transition-all relative"
                           title="Sao chép"
                         >
                           {copyStatus ? <span className="text-[8px] font-black absolute -top-8 right-0 bg-blue-600 text-white p-1 whitespace-nowrap">{copyStatus}</span> : null}
-                          <Scan size={14} />
+                          <Scan size={12} /> Sao chép
                         </button>
                       </div>
+                      <textarea
+                        value={editingText}
+                        onChange={(e) => setEditingText(e.target.value)}
+                        className={`w-full text-xs font-black p-2 border-2 border-dashed border-blue-500 bg-transparent resize-none h-16 outline-none focus:bg-blue-50/5 transition-colors leading-normal ${cText}`}
+                        placeholder="Cập nhật bản dịch mới tại đây..."
+                      />
+
+                      {/* Individual Bubble Font Size Scaling Control */}
+                      <div className="space-y-1 mt-1 border-t border-dashed border-gray-500/20 pt-2 pb-1">
+                        <div className="flex justify-between text-[9px] font-black uppercase">
+                          <span className="opacity-60 font-black">Cỡ chữ ô thoại này:</span>
+                          <span className="text-emerald-500 font-black">{editingFontSizeScaleCustom}%</span>
+                        </div>
+                        <input 
+                          type="range"
+                          min="50"
+                          max="200"
+                          step="5"
+                          value={editingFontSizeScaleCustom}
+                          onChange={(e) => setEditingFontSizeScaleCustom(parseInt(e.target.value, 10))}
+                          className="w-full h-1 bg-gray-300 dark:bg-gray-700 rounded appearance-none cursor-pointer accent-emerald-600"
+                        />
+                      </div>
+
+                      {/* Individual Bubble Padding/Covering Offset Control */}
+                      <div className="space-y-1 mt-1 border-t border-dashed border-gray-500/20 pt-2 pb-1">
+                        <div className="flex justify-between text-[9px] font-black uppercase">
+                          <span className="opacity-60 font-black">Cỡ che phủ (Bọc viền) ô này:</span>
+                          <span className={editingOffsetCustom >= 0 ? "text-emerald-500 font-black" : "text-rose-500 font-black"}>
+                            {editingOffsetCustom > 0 ? `+${editingOffsetCustom}` : editingOffsetCustom}px
+                          </span>
+                        </div>
+                        <input 
+                          type="range"
+                          min="-15"
+                          max="25"
+                          step="1"
+                          value={editingOffsetCustom}
+                          onChange={(e) => setEditingOffsetCustom(parseInt(e.target.value, 10))}
+                          className="w-full h-1 bg-gray-300 dark:bg-gray-700 rounded appearance-none cursor-pointer accent-emerald-600"
+                        />
+                        <div className="flex justify-between text-[7px] font-mono font-bold opacity-40">
+                          <span>-15px (Nhỏ)</span>
+                          <span>0px (Chuẩn)</span>
+                          <span>25px (Rộng)</span>
+                        </div>
+                      </div>
+
+                      {currentResult && (
+                        editingText !== selectedBubble.translated_text || 
+                        editingFontSizeScaleCustom !== (selectedBubble.custom_font_size || 100) ||
+                        editingOffsetCustom !== (selectedBubble.custom_offset !== undefined ? selectedBubble.custom_offset : exportBubbleOffset)
+                      ) && (
+                        <motion.button
+                          initial={{ opacity: 0, y: 5 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          onClick={() => updateBubbleTranslation(currentResult.id, selectedBubble.bubble_id, editingText, editingFontSizeScaleCustom, editingOffsetCustom)}
+                          className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-sm text-[10px] font-black uppercase shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                        >
+                          <Check size={11} /> Lưu chỉnh sửa
+                        </motion.button>
+                      )}
                     </div>
                   </div>
                 </motion.div>
@@ -967,12 +2090,27 @@ export default function App() {
               <div className="max-w-2xl mx-auto flex flex-col gap-2">
                 {/* Progress Bar */}
                 {isProcessing && (
-                  <div className={`h-1.5 w-full overflow-hidden rounded-full ${isDarkMode ? "bg-[#E4E3E0]/10" : "bg-[#141414]/10"}`}>
-                    <motion.div 
-                      className="h-full bg-blue-600"
-                      initial={{ width: 0 }}
-                      animate={{ width: `${progress}%` }}
-                    />
+                  <div className="flex flex-col gap-1 w-full mb-1">
+                    <div className="flex justify-between items-center text-[9px] font-black uppercase">
+                      <span className="text-blue-500 animate-pulse">
+                        {isProcessingAll ? `Dịch hàng loạt: ${processedCount}/${images.length} trang` : "Đang thực thi dịch thuật..."}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={cancelProcessing}
+                        className="text-[9px] font-black text-rose-500 hover:text-rose-400 bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20 active:scale-95 transition-all text-center uppercase cursor-pointer"
+                        title="Dừng tiến trình dịch ngay lập tức"
+                      >
+                        Dừng dịch
+                      </button>
+                    </div>
+                    <div className={`h-1.5 w-full overflow-hidden rounded-full ${isDarkMode ? "bg-[#E4E3E0]/10" : "bg-[#141414]/10"}`}>
+                      <motion.div 
+                        className="h-full bg-blue-600"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${progress}%` }}
+                      />
+                    </div>
                   </div>
                 )}
                 
@@ -1058,7 +2196,29 @@ export default function App() {
             <h2 className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
               <Clock size={12} /> Dữ liệu đã trích xuất
             </h2>
-            {currentResult && <div className="text-[10px] font-mono font-bold">{currentResult.total_bubbles} Ô THOẠI</div>}
+            <div className="flex items-center gap-2">
+              {currentResult && (
+                <div className="flex items-center gap-1.5">
+                  <button 
+                    onClick={() => exportSinglePageTxt(currentResult, activeIndex + 1)}
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black uppercase px-2.5 py-1 rounded-sm flex items-center gap-1 active:scale-95 transition-all"
+                    title="Tải kịch bản trang này (.txt)"
+                  >
+                    <Download size={10} /> kịch bản
+                  </button>
+                  <button 
+                    onClick={() => setExportSettingsOpen(true)}
+                    disabled={isExportingImage}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-black uppercase px-2.5 py-1 rounded-sm flex items-center gap-1 active:scale-95 transition-all disabled:opacity-50"
+                    title="Cấu hình và tải ảnh manga đã dịch (.png)"
+                  >
+                    {isExportingImage ? <Loader2 size={10} className="animate-spin" /> : <ImageIcon size={10} />}
+                    <span>{isExportingImage ? "Đang tải..." : "ảnh dịch"}</span>
+                  </button>
+                </div>
+              )}
+              {currentResult && <div className="text-[10px] font-mono font-bold shrink-0">{currentResult.total_bubbles} Ô THOẠI</div>}
+            </div>
           </div>
 
           <div className={`flex-1 overflow-y-auto divide-y-2 ${cDivide}`}>
@@ -1125,6 +2285,202 @@ export default function App() {
         </aside>
 
       </main>
+
+      {/* Script Viewer Modal Overlay */}
+      <AnimatePresence>
+        {scriptDialog.isOpen && scriptDialog.parsed && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }}
+              onClick={() => setScriptDialog(prev => ({ ...prev, isOpen: false }))}
+              className="fixed inset-0 bg-black/80 backdrop-blur-md z-[150] flex items-center justify-center p-3 md:p-6"
+            >
+              <motion.div 
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                onClick={(e) => e.stopPropagation()}
+                className={`w-full max-w-5xl h-[85vh] ${cCardBg} border-4 ${cBorder} shadow-[12px_12px_0px_#000] dark:shadow-[12px_12px_0px_rgba(228,227,224,0.15)] flex flex-col overflow-hidden relative`}
+              >
+                {/* Modal Header */}
+                <div className="p-4 border-b-2 border-dashed flex justify-between items-center bg-[#141414] text-white shrink-0">
+                  <div className="flex items-center gap-2">
+                    <FileText size={18} className="text-blue-400" />
+                    <div>
+                      <h2 className="text-xs md:text-sm font-black uppercase tracking-tight">Trình đọc Kịch bản Dịch MioManga</h2>
+                      <p className="text-[9px] opacity-60 normal-case font-bold">{scriptDialog.parsed.title || "Tệp kịch bản"}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {/* Choose another file inside modal uploader */}
+                    <label 
+                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-sm text-[9px] font-black uppercase tracking-tighter cursor-pointer flex items-center gap-1 active:scale-95 transition-all"
+                      title="Nạp một tệp kịch bản khác (.txt)"
+                    >
+                      <Upload size={10} /> Đổi Tệp
+                      <input 
+                        type="file" 
+                        accept=".txt" 
+                        className="hidden" 
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const reader = new FileReader();
+                            reader.onload = (evt) => {
+                              const content = evt.target?.result;
+                              if (typeof content === "string") {
+                                const parsed = parseMioScript(content);
+                                setScriptDialog({ isOpen: true, parsed });
+                                setScriptViewPageIdx(0);
+                              }
+                            };
+                            reader.readAsText(file);
+                          }
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <button 
+                      onClick={() => setScriptDialog(prev => ({ ...prev, isOpen: false }))}
+                      className="hover:scale-110 transition-transform text-white"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Main panel layout: Sidebar with pages, Main content area with dialogue lines */}
+                <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+                  
+                  {/* Sidebar: Chapters/Pages */}
+                  <aside className={`w-full md:w-56 shrink-0 border-b md:border-b-0 md:${cBorderR} ${cBorderB} flex flex-col min-h-0 h-[25%] md:h-full overflow-hidden`}>
+                    <div className="p-2 border-b-2 border-dashed select-none bg-black/5 dark:bg-white/5 flex justify-between items-center text-[9px] font-black uppercase tracking-zero shrink-0">
+                      <span>📄 Phân đoạn trang ({scriptDialog.parsed.pages.length})</span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto divide-y divide-black/10 dark:divide-white/10">
+                      {scriptDialog.parsed.pages.map((page, pIdx) => (
+                        <button
+                          key={pIdx}
+                          onClick={() => setScriptViewPageIdx(pIdx)}
+                          className={`w-full text-left p-2.5 md:p-3 transition-all flex flex-col gap-1.5 focus:outline-none ${
+                            scriptViewPageIdx === pIdx 
+                              ? `bg-blue-600 text-white border-l-4 border-blue-400 pl-2` 
+                              : `hover:bg-black/5 dark:hover:bg-white/5 ${cText}`
+                          }`}
+                        >
+                          <div className="flex justify-between items-center w-full">
+                            <span className="text-[10px] font-black uppercase tracking-wider">{page.pageNumber || `Phần ${pIdx + 1}`}</span>
+                            <span className={`text-[8px] font-mono font-bold px-1 rounded ${scriptViewPageIdx === pIdx ? 'bg-white/20 text-white' : 'bg-black/10 dark:bg-white/10 opacity-70'}`}>
+                              {page.bubbles.length} thoại
+                            </span>
+                          </div>
+                          {page.context && (
+                            <p className={`text-[8.5px] leading-tight truncate w-full ${scriptViewPageIdx === pIdx ? 'text-white/80' : 'opacity-60'}`}>
+                              {page.context}
+                            </p>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </aside>
+
+                  {/* Main dialogues container */}
+                  <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-black/[0.02] dark:bg-white/[0.01]">
+                    {scriptDialog.parsed.pages[scriptViewPageIdx] ? (
+                      <>
+                        {/* Page header metadata */}
+                        <div className={`p-4 border-b-2 ${cBorder} ${isDarkMode ? "bg-blue-950/20" : "bg-blue-50/50"} shrink-0 flex flex-col gap-1.5`}>
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] font-black uppercase text-blue-500 tracking-wider">📜 Nội dung kịch bản {scriptDialog.parsed.pages[scriptViewPageIdx].pageNumber}</span>
+                            {scriptDialog.parsed.targetLang && (
+                              <span className="text-[8px] font-mono uppercase bg-blue-500/10 text-blue-500 border border-blue-500/20 px-1.5 py-0.5 rounded-sm font-black">
+                                Ngôn ngữ đích: {scriptDialog.parsed.targetLang}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs font-black italic select-none leading-tight py-1 opacity-90">
+                            Bối cảnh phân đoạn: "{scriptDialog.parsed.pages[scriptViewPageIdx].context || "Không ghi chép."}"
+                          </p>
+                        </div>
+
+                        {/* Dialogue dialog items */}
+                        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                          {scriptDialog.parsed.pages[scriptViewPageIdx].bubbles.map((b, bIdx) => (
+                            <div 
+                              key={b.id || bIdx}
+                              className={`p-4 border-2 ${cBorder} ${cCardBg} grid grid-cols-1 md:grid-cols-2 gap-4 shadow-sm relative hover:border-blue-500/50 transition-colors`}
+                            >
+                              {/* Left cell: JPN/ENG Origin */}
+                              <div className="space-y-1.5">
+                                <div className="flex justify-between items-center select-none">
+                                  <span className="text-[9px] font-black uppercase text-red-500 bg-red-500/15 border border-red-500/20 px-1.5 py-0.5 rounded-sm">
+                                    🔴 HOẠT ẢNH GỐC #{b.id}
+                                  </span>
+                                  {b.confidence && (
+                                    <span className="text-[8px] font-mono opacity-50 font-bold">Điểm: {b.confidence}</span>
+                                  )}
+                                </div>
+                                <div className={`p-2.5 rounded-sm font-mono text-[10px] min-h-[46px] leading-relaxed break-words whitespace-pre-wrap ${isDarkMode ? 'bg-black/30' : 'bg-black/5 grayscale'}`}>
+                                  {b.original || <span className="opacity-30 italic">Thiếu lời thoại gốc</span>}
+                                </div>
+                              </div>
+
+                              {/* Right cell: Translation */}
+                              <div className="space-y-1.5">
+                                <div className="flex justify-between items-center select-none">
+                                  <span className="text-[9px] font-black uppercase text-emerald-500 bg-emerald-500/15 border border-emerald-500/20 px-1.5 py-0.5 rounded-sm font-black">
+                                    🟢 BẢN DỊCH CHIA THOẠI
+                                  </span>
+                                  <button
+                                    onClick={() => copyToClipboard(b.translated || "")}
+                                    className="p-1 text-blue-500 hover:bg-blue-500/10 transition-colors uppercase font-black text-[9px] flex items-center gap-1 border border-blue-500/20 rounded-sm"
+                                  >
+                                    <Scan size={10} /> Sao Chép
+                                  </button>
+                                </div>
+                                <div className={`p-2.5 rounded-sm text-xs md:text-sm font-black min-h-[46px] leading-snug break-words border-2 border-dashed border-emerald-500/30 ${isDarkMode ? 'bg-[#1e2a1e]' : 'bg-emerald-50/[0.3]'}`}>
+                                  {b.translated || <span className="opacity-30 italic">Chưa dịch thoại</span>}
+                                </div>
+                              </div>
+                              
+                              {b.location && (
+                                <span className="col-span-1 md:col-span-2 text-[8px] font-mono opacity-30 italic block text-right">
+                                  Tọa độ: {b.location}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center p-12 opacity-30 space-y-3">
+                        <FileText size={64} strokeWidth={1} />
+                        <div className="text-center font-black">
+                          <p className="text-xs uppercase tracking-wide">Trống Rỗng</p>
+                          <p className="text-[10px] italic mt-1 font-medium">Vui lòng chọn hoặc nạp một phân đoạn khác</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Modal Footer / Navigation status */}
+                <div className="p-3 bg-black text-white flex justify-between items-center text-[9px] font-black uppercase tracking-wider shrink-0 select-none">
+                  <div className="flex items-center gap-1.5">
+                    <Check size={12} className="text-emerald-400" />
+                    <span>Nạp Kịch bản thành công</span>
+                  </div>
+                  <div>
+                    <span>MioManga v2.0 • Script Reader Mode</span>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Custom Confirmation Modal */}
       <AnimatePresence>
